@@ -1,0 +1,7 @@
+pyrogram>=2.0.106
+TgCrypto>=1.2.5
+rich>=13.7.0
+python-dotenv>=1.0.1
+cryptography>=42.0.8
+qrcode>=7.4.2
+Pillow>=10.4.0

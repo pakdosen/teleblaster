@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+logs/*.log
+logs/*.session
+sessions/*.json
+members.csv
+scrape_checkpoint.json
+account_cooldowns.json
+qr_login.png
