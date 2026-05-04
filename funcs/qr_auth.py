@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Callable
 
 import qrcode
-from pyrogram.errors import AuthTokenExpired
 from pyrogram.raw import functions, types
 from pyrogram.session import Auth, Session
 
@@ -127,6 +126,9 @@ async def show_qr_and_wait_login(
     if not token:
         return False
 
+    # Poll auth.exportLoginToken to detect when the user accepts the QR on a primary device.
+    # Per https://core.telegram.org/api/qr-login the secondary device polls exportLoginToken
+    # (NOT importLoginToken) until the server returns auth.loginTokenSuccess.
     while time.time() < deadline:
         try:
             uid = await app.storage.user_id()
@@ -145,68 +147,18 @@ async def show_qr_and_wait_login(
             pass
 
         try:
-            imported = await app.invoke(functions.auth.ImportLoginToken(token=token))
-        except AuthTokenExpired:
-            _emit("QR: token expired, export token baru")
             ok = await _export_and_show_token()
-            if ok:
-                return True
-            if not token:
-                return False
-            await asyncio.sleep(1)
-            continue
         except Exception as exc:
-            err = str(exc).upper()
-            if "AUTH_TOKEN_INVALID" in err or "AUTH_TOKEN_ALREADY_ACCEPTED" in err:
-                _emit("QR: token invalid/accepted, sinkron ulang token")
-                ok = await _export_and_show_token()
-                if ok:
-                    return True
-                await asyncio.sleep(1)
-                continue
-            _emit(f"QR: import error {type(exc).__name__}: {exc}")
+            _emit(f"QR: poll error {type(exc).__name__}: {exc}")
             await asyncio.sleep(1)
             continue
 
-        if isinstance(imported, types.auth.LoginTokenSuccess):
-            _emit("QR: LoginTokenSuccess diterima dari import")
-            return await _apply_authorization(imported.authorization, "success dari import")
+        if ok:
+            return True
+        if not token:
+            return False
 
-        if isinstance(imported, types.auth.LoginTokenMigrateTo):
-            _emit(f"QR: import migrate to DC {imported.dc_id}")
-            await _switch_dc(imported.dc_id)
-            token = imported.token
-            if token != last_shown_token:
-                url = _token_to_url(token)
-                _save_qr_png(url, out_path=out_path)
-                if on_qr_file is not None:
-                    try:
-                        on_qr_file(str(Path(out_path).resolve()), url)
-                    except Exception:
-                        pass
-                last_shown_token = token
-            await asyncio.sleep(1)
-            continue
-
-        if isinstance(imported, types.auth.LoginToken):
-            token = imported.token
-            if token != last_shown_token:
-                _emit("QR: server rotate token, update QR")
-                url = _token_to_url(token)
-                _save_qr_png(url, out_path=out_path)
-                if on_qr_file is not None:
-                    try:
-                        on_qr_file(str(Path(out_path).resolve()), url)
-                    except Exception:
-                        pass
-                last_shown_token = token
-            else:
-                _emit("QR: menunggu scan/konfirmasi")
-            await asyncio.sleep(2)
-            continue
-
-        _emit("QR: import result tidak dikenali")
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
     try:
         uid = await app.storage.user_id()

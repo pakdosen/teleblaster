@@ -82,6 +82,11 @@ class TelegramScraperGUI:
 
         self.login_state: dict | None = None
         self.auth_busy = False
+        # Cross-thread handshake for OTP login: the worker thread sends the OTP and waits
+        # on this event for the user to click "Complete Login" with the code/2FA filled in.
+        self._otp_complete_event: threading.Event | None = None
+        self._otp_complete_data: dict | None = None
+        self._otp_ready_for_completion = False
         self.group_candidates: list[dict] = []
         self.scrape_phone_hint: str | None = None
         self.broadcast_rows: list[dict] = []
@@ -779,16 +784,24 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Phone dan encryption password wajib diisi")
             return
 
+        # The send_code request and the subsequent sign_in MUST share the same Pyrogram
+        # Client instance + auth_key + MTProto session. Splitting them across two
+        # asyncio.run() calls (different event loops) causes the server to reject the
+        # phone_code_hash with PHONE_CODE_EXPIRED almost instantly. So we run the whole
+        # flow inside one coroutine and use a threading.Event to wait for the user to
+        # click "Complete Login".
         self.auth_busy = True
+        self._otp_complete_event = threading.Event()
+        self._otp_complete_data = None
+        self._otp_ready_for_completion = False
+        self.login_state = {"phone": phone, "enc_pw": enc_pw}
 
         async def _job():
-            otp_session_name = f"otp_flow_{re.sub(r'\D+', '', phone)}"
             app = Client(
-                name=otp_session_name,
+                name=f"otp_flow_{re.sub(r'\D+', '', phone)}",
                 api_id=self.config.api_id,
                 api_hash=self.config.api_hash,
-                in_memory=False,
-                workdir=self.config.logs_dir,
+                in_memory=True,
             )
             try:
                 await app.connect()
@@ -801,91 +814,94 @@ class TelegramScraperGUI:
                             f"Terlalu sering minta OTP. Tunggu sekitar {wait_s} detik lalu klik Send OTP lagi."
                         ) from exc
                     raise
-                # Persist only primitives to avoid cross-event-loop client reuse/hangs.
-                self.login_state = {
-                    "phone": phone,
-                    "enc_pw": enc_pw,
-                    "phone_code_hash": sent.phone_code_hash,
-                    "otp_session_name": otp_session_name,
-                }
-                self._post(lambda: self._log(f"OTP sent to {phone}. Input OTP lalu klik Complete Login."))
-            finally:
+
+                self._post(
+                    lambda p=phone: self._log(
+                        f"OTP terkirim ke {p}. Input OTP lalu klik Complete Login."
+                    )
+                )
+                self._post(lambda: setattr(self, "_otp_ready_for_completion", True))
+
+                ev = self._otp_complete_event
+                if ev is None:
+                    return
+
+                loop = asyncio.get_event_loop()
+                while True:
+                    completed = await loop.run_in_executor(None, ev.wait, 1.0)
+                    if completed:
+                        break
+                    if not self.auth_busy:
+                        # Window closed or job aborted from the outside.
+                        return
+
+                data = self._otp_complete_data or {}
+                if data.get("cancelled"):
+                    self._post(lambda: self._log("OTP login dibatalkan."))
+                    return
+
+                otp = (data.get("otp") or "").strip()
+                twofa = (data.get("twofa") or "").strip()
+                if not otp:
+                    raise RuntimeError("OTP kosong saat Complete Login.")
+
                 try:
-                    await app.disconnect()
-                except Exception:
-                    pass
-                self._post(lambda: setattr(self, "auth_busy", False))
-
-        self._run_async_job(_job())
-
-    def _complete_otp_login(self) -> None:
-        if self.auth_busy:
-            messagebox.showinfo("Login", "Proses login sedang berjalan. Tunggu sampai selesai.")
-            return
-
-        otp = self.login_otp.get().replace(" ", "").strip()
-        twofa = self.login_2fa.get().strip()
-        if not self.login_state:
-            messagebox.showwarning("Login", "Klik Send OTP dulu")
-            return
-
-        state_phone = (self.login_state.get("phone") or "").strip()
-        input_phone = self.login_phone.get().strip()
-        if state_phone and input_phone and state_phone != input_phone:
-            messagebox.showwarning("Login", "Nomor berubah setelah Send OTP. Silakan klik Send OTP lagi untuk nomor terbaru.")
-            self.login_state = None
-            return
-
-        if not otp:
-            messagebox.showwarning("Login", "OTP wajib diisi")
-            return
-
-        self.auth_busy = True
-
-        async def _job():
-            state = self.login_state
-            phone = state["phone"]
-            otp_session_name = state.get("otp_session_name") or f"otp_flow_{re.sub(r'\D+', '', phone)}"
-            app = Client(
-                name=otp_session_name,
-                api_id=self.config.api_id,
-                api_hash=self.config.api_hash,
-                in_memory=False,
-                workdir=self.config.logs_dir,
-            )
-            keep_login_state = False
-            try:
-                self._post(lambda p=phone: self._log(f"Menyelesaikan login OTP untuk {p}..."))
-                await app.connect()
-                try:
-                    await app.sign_in(phone_number=phone, phone_code_hash=state["phone_code_hash"], phone_code=otp)
+                    await app.sign_in(
+                        phone_number=phone,
+                        phone_code_hash=sent.phone_code_hash,
+                        phone_code=otp,
+                    )
                 except SessionPasswordNeeded:
                     if not twofa:
-                        raise RuntimeError("Akun butuh 2FA password")
+                        raise RuntimeError(
+                            "Akun butuh 2FA password. Isi field 2FA Password lalu klik Complete Login lagi."
+                        )
                     await app.check_password(twofa)
                 except Exception as exc:
                     err_text = str(exc).upper()
                     if "PHONE_CODE_EXPIRED" in err_text:
-                        self.login_state = None
-                        self._post(lambda: self.login_otp.delete(0, tk.END))
+                        raise RuntimeError(
+                            "Kode OTP kadaluarsa di server. Klik Send OTP lagi untuk request kode baru."
+                        ) from exc
+                    if "PHONE_CODE_INVALID" in err_text:
+                        # Allow the user to retry with the same phone_code_hash by clicking
+                        # Complete Login again — keep the worker waiting on the event.
+                        self._otp_complete_data = None
+                        self._otp_complete_event = threading.Event()
                         self._post(
-                            lambda: messagebox.showwarning(
-                                "OTP Expired",
-                                "Kode OTP kadaluarsa. Klik Send OTP sekali lagi untuk mendapatkan kode baru.",
+                            lambda: self._log(
+                                "Kode OTP tidak valid. Perbaiki kode lalu klik Complete Login lagi."
                             )
                         )
-                        self._post(lambda: self._log("OTP kadaluarsa. Silakan klik Send OTP lagi (jangan berulang-ulang)."))
-                        return
-                    if "PHONE_CODE_INVALID" in err_text:
-                        keep_login_state = True
-                        raise RuntimeError("Kode OTP tidak valid. Periksa lagi lalu coba Complete Login.") from exc
-                    wait_s = self._extract_flood_wait_seconds(err_text)
-                    if wait_s:
-                        self.login_state = None
-                        raise RuntimeError(
-                            f"Terlalu sering request OTP. Tunggu sekitar {wait_s} detik, lalu klik Send OTP lagi."
-                        ) from exc
-                    raise
+                        self._post(
+                            lambda: messagebox.showwarning(
+                                "OTP Invalid",
+                                "Kode OTP yang diinput salah. Perbaiki lalu klik Complete Login lagi.",
+                            )
+                        )
+                        ev = self._otp_complete_event
+                        completed = False
+                        while not completed:
+                            completed = await loop.run_in_executor(None, ev.wait, 1.0)
+                            if not self.auth_busy:
+                                return
+                        data = self._otp_complete_data or {}
+                        if data.get("cancelled"):
+                            return
+                        otp = (data.get("otp") or "").strip()
+                        twofa = (data.get("twofa") or "").strip()
+                        await app.sign_in(
+                            phone_number=phone,
+                            phone_code_hash=sent.phone_code_hash,
+                            phone_code=otp,
+                        )
+                    else:
+                        wait_s = self._extract_flood_wait_seconds(err_text)
+                        if wait_s:
+                            raise RuntimeError(
+                                f"Terlalu sering request OTP. Tunggu sekitar {wait_s} detik, lalu klik Send OTP lagi."
+                            ) from exc
+                        raise
 
                 me = await app.get_me()
                 if not me:
@@ -896,17 +912,51 @@ class TelegramScraperGUI:
                     config=self.config,
                     phone=phone,
                     session_string=session_str,
-                    password=state["enc_pw"],
+                    password=enc_pw,
                 )
-                self._post(lambda p=phone: self._log(f"Login sukses untuk {p}. Session terenkripsi tersimpan."))
+                self._post(
+                    lambda p=phone: self._log(f"Login sukses untuk {p}. Session terenkripsi tersimpan.")
+                )
                 self._post(self._refresh_sessions_view)
             finally:
-                await app.disconnect()
-                if not keep_login_state:
-                    self.login_state = None
+                try:
+                    await app.disconnect()
+                except Exception:
+                    pass
                 self._post(lambda: setattr(self, "auth_busy", False))
+                self._post(lambda: setattr(self, "_otp_ready_for_completion", False))
+                self._post(lambda: setattr(self, "_otp_complete_event", None))
+                self._post(lambda: setattr(self, "_otp_complete_data", None))
+                self._post(lambda: setattr(self, "login_state", None))
 
         self._run_async_job(_job())
+
+    def _complete_otp_login(self) -> None:
+        if not self.auth_busy or not self._otp_ready_for_completion or self._otp_complete_event is None:
+            messagebox.showwarning("Login", "Klik Send OTP dulu dan tunggu OTP terkirim.")
+            return
+        if self._otp_complete_event.is_set():
+            messagebox.showinfo("Login", "Sedang memproses login. Tunggu hasilnya.")
+            return
+
+        otp = self.login_otp.get().replace(" ", "").strip()
+        twofa = self.login_2fa.get().strip()
+
+        state_phone = ((self.login_state or {}).get("phone") or "").strip()
+        input_phone = self.login_phone.get().strip()
+        if state_phone and input_phone and state_phone != input_phone:
+            messagebox.showwarning(
+                "Login",
+                "Nomor berubah setelah Send OTP. Klik Send OTP lagi untuk nomor terbaru.",
+            )
+            return
+
+        if not otp:
+            messagebox.showwarning("Login", "OTP wajib diisi")
+            return
+
+        self._otp_complete_data = {"otp": otp, "twofa": twofa}
+        self._otp_complete_event.set()
 
     def _start_qr_login(self) -> None:
         if self.auth_busy:
