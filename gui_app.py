@@ -441,20 +441,28 @@ class TelegramScraperGUI:
 
         ttk.Label(frm, text="Add Members", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Label(frm, text="Mode").grid(row=1, column=0, sticky="w")
+        ttk.Label(frm, text="Akun").grid(row=1, column=0, sticky="w")
+        self.add_account = ttk.Combobox(frm, width=36, state="readonly", values=[self.AUTO_ACCOUNT_LABEL])
+        self.add_account.set(self.AUTO_ACCOUNT_LABEL)
+        self.add_account.grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Button(frm, text="Refresh Akun", command=self._refresh_account_pickers).grid(
+            row=1, column=2, sticky="w", padx=6
+        )
+
+        ttk.Label(frm, text="Mode").grid(row=2, column=0, sticky="w")
         self.add_mode = ttk.Combobox(frm, width=28, state="readonly", values=["Rush", "Calm"])
         self.add_mode.set("Rush")
-        self.add_mode.grid(row=1, column=1, sticky="w", padx=8)
+        self.add_mode.grid(row=2, column=1, sticky="w", padx=8)
 
-        ttk.Label(frm, text="Encryption Password").grid(row=2, column=0, sticky="w")
+        ttk.Label(frm, text="Encryption Password").grid(row=3, column=0, sticky="w")
         self.add_password = ttk.Entry(frm, show="*", width=32)
-        self.add_password.grid(row=2, column=1, sticky="w", padx=8)
+        self.add_password.grid(row=3, column=1, sticky="w", padx=8)
 
-        ttk.Label(frm, text="Target group username/link").grid(row=3, column=0, sticky="w")
+        ttk.Label(frm, text="Target group username/link").grid(row=4, column=0, sticky="w")
         self.add_target = ttk.Entry(frm, width=48)
-        self.add_target.grid(row=3, column=1, sticky="w", padx=8)
+        self.add_target.grid(row=4, column=1, sticky="w", padx=8)
 
-        ttk.Button(frm, text="Run Adder", style="Accent.TButton", command=self._run_adder).grid(row=4, column=1, sticky="w", padx=8, pady=8)
+        ttk.Button(frm, text="Run Adder", style="Accent.TButton", command=self._run_adder).grid(row=5, column=1, sticky="w", padx=8, pady=8)
 
     def _build_broadcast_tab(self) -> None:
         frm = self.tab_broadcast
@@ -1590,6 +1598,10 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Password dan target wajib diisi")
             return
 
+        adder_account_phone = self._parse_account_choice(self.add_account.get()) if hasattr(self, "add_account") else None
+        if adder_account_phone:
+            self._log(f"Adder menggunakan akun terpilih: {mask_phone(adder_account_phone)} (rotasi dimatikan)")
+
         async def _job():
             rows = read_members_csv(self.config.members_csv)
             if not rows:
@@ -1611,7 +1623,7 @@ class TelegramScraperGUI:
                         await app.add_chat_members(target, int(uid))
                         return True
 
-                    _, used_phone = await execute_with_rotation(self.manager, password, _op)
+                    _, used_phone = await self._execute_on_account(password, adder_account_phone, _op)
                     added += 1
                     processed_ids.add(uid)
                     self._post(lambda p=used_phone, u=uid: self._log(f"Added {u} via {p}"))
@@ -2176,7 +2188,7 @@ class TelegramScraperGUI:
 
     def _refresh_account_pickers(self) -> None:
         choices = self._account_choices()
-        for combobox_name in ("scrape_account", "broadcast_account"):
+        for combobox_name in ("scrape_account", "add_account", "broadcast_account"):
             cb = getattr(self, combobox_name, None)
             if cb is None:
                 continue
