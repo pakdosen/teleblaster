@@ -42,26 +42,40 @@ class TelegramScraperGUI:
 
         self.themes = {
             "dark": {
-                "bg": "#111318",
-                "panel": "#1a1f29",
-                "panel_2": "#202736",
-                "text": "#e8ecf1",
-                "muted": "#a9b4c0",
-                "accent": "#4ea1ff",
-                "accent_hover": "#6ab2ff",
-                "border": "#2a3142",
-                "ok": "#61d095",
+                "bg": "#0b0f17",
+                "panel": "#141a26",
+                "panel_2": "#1d2533",
+                "panel_3": "#252e3f",
+                "text": "#ecf1f8",
+                "muted": "#94a3b8",
+                "accent": "#5ea0ff",
+                "accent_hover": "#7cb3ff",
+                "accent_press": "#3d8aff",
+                "border": "#2a3447",
+                "border_strong": "#3a465d",
+                "ok": "#34d399",
+                "ok_hover": "#4ade8b",
+                "danger": "#ef5d6f",
+                "danger_hover": "#f57787",
+                "warn": "#f5b454",
             },
             "light": {
-                "bg": "#f3f6fb",
+                "bg": "#f5f7fb",
                 "panel": "#ffffff",
-                "panel_2": "#e8eef8",
-                "text": "#17202b",
-                "muted": "#4f6072",
-                "accent": "#2f7df6",
-                "accent_hover": "#4b90f8",
-                "border": "#c8d3e4",
-                "ok": "#1f9d63",
+                "panel_2": "#eef2f9",
+                "panel_3": "#e1e8f4",
+                "text": "#0f172a",
+                "muted": "#475569",
+                "accent": "#2563eb",
+                "accent_hover": "#3b82f6",
+                "accent_press": "#1d4ed8",
+                "border": "#cbd5e1",
+                "border_strong": "#94a3b8",
+                "ok": "#16a34a",
+                "ok_hover": "#22c55e",
+                "danger": "#dc2626",
+                "danger_hover": "#ef4444",
+                "warn": "#d97706",
             },
         }
         self.theme_mode = tk.StringVar(value="dark")
@@ -112,27 +126,102 @@ class TelegramScraperGUI:
         except Exception:
             pass
 
+        ui_font = ("Segoe UI", 10)
+        ui_font_med = ("Segoe UI Semibold", 10)
+        header_font = ("Segoe UI Semibold", 18)
+        small_font = ("Segoe UI", 9)
+        on_accent = "#0a1220" if self.theme_mode.get() == "dark" else "#ffffff"
+
         style.configure("TFrame", background=c["bg"])
-        style.configure("Card.TFrame", background=c["panel"])
-        style.configure("TLabel", background=c["bg"], foreground=c["text"], font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background=c["bg"], foreground=c["muted"], font=("Segoe UI", 9))
-        style.configure("Header.TLabel", background=c["bg"], foreground=c["text"], font=("Segoe UI Semibold", 17))
+        style.configure("Card.TFrame", background=c["panel"], relief="flat")
+        style.configure("Toolbar.TFrame", background=c["panel"])
+        style.configure("TLabel", background=c["bg"], foreground=c["text"], font=ui_font)
+        style.configure("Card.TLabel", background=c["panel"], foreground=c["text"], font=ui_font)
+        style.configure("Muted.TLabel", background=c["bg"], foreground=c["muted"], font=small_font)
+        style.configure("CardMuted.TLabel", background=c["panel"], foreground=c["muted"], font=small_font)
+        style.configure("Header.TLabel", background=c["bg"], foreground=c["text"], font=header_font)
+        style.configure("SubHeader.TLabel", background=c["bg"], foreground=c["muted"], font=("Segoe UI", 11))
+        style.configure("Status.TLabel", background=c["bg"], foreground=c["ok"], font=ui_font_med)
+
+        # Default (subtle) button: panel-toned with hover lift to accent
         style.configure(
             "TButton",
             background=c["panel_2"],
             foreground=c["text"],
             borderwidth=0,
             focusthickness=0,
-            padding=(12, 7),
-            font=("Segoe UI", 10),
+            padding=(14, 8),
+            font=ui_font,
         )
         style.map(
             "TButton",
-            background=[("active", c["accent_hover"]), ("pressed", c["accent"])],
-            foreground=[("disabled", c["muted"]), ("active", "#0f1722")],
+            background=[("active", c["panel_3"]), ("pressed", c["panel_3"]), ("disabled", c["panel_2"])],
+            foreground=[("disabled", c["muted"])],
         )
-        style.configure("Accent.TButton", background=c["accent"], foreground="#0f1722", font=("Segoe UI Semibold", 10))
-        style.map("Accent.TButton", background=[("active", c["accent_hover"]), ("pressed", c["accent"])])
+
+        # Accent (primary) button
+        style.configure(
+            "Accent.TButton",
+            background=c["accent"],
+            foreground=on_accent,
+            borderwidth=0,
+            focusthickness=0,
+            padding=(14, 8),
+            font=ui_font_med,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", c["accent_hover"]), ("pressed", c["accent_press"])],
+            foreground=[("disabled", c["muted"])],
+        )
+
+        # Success (positive) button
+        style.configure(
+            "Success.TButton",
+            background=c["ok"],
+            foreground=on_accent,
+            borderwidth=0,
+            focusthickness=0,
+            padding=(14, 8),
+            font=ui_font_med,
+        )
+        style.map(
+            "Success.TButton",
+            background=[("active", c["ok_hover"]), ("pressed", c["ok"])],
+            foreground=[("disabled", c["muted"])],
+        )
+
+        # Danger (destructive) button
+        style.configure(
+            "Danger.TButton",
+            background=c["panel_2"],
+            foreground=c["danger"],
+            borderwidth=0,
+            focusthickness=0,
+            padding=(14, 8),
+            font=ui_font_med,
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", c["danger"]), ("pressed", c["danger_hover"])],
+            foreground=[("active", on_accent), ("pressed", on_accent), ("disabled", c["muted"])],
+        )
+
+        # Ghost / link-style button
+        style.configure(
+            "Link.TButton",
+            background=c["bg"],
+            foreground=c["accent"],
+            borderwidth=0,
+            focusthickness=0,
+            padding=(8, 6),
+            font=ui_font,
+        )
+        style.map(
+            "Link.TButton",
+            background=[("active", c["panel"]), ("pressed", c["panel"])],
+            foreground=[("active", c["accent_hover"])],
+        )
 
         style.configure(
             "TEntry",
@@ -142,7 +231,13 @@ class TelegramScraperGUI:
             bordercolor=c["border"],
             lightcolor=c["border"],
             darkcolor=c["border"],
-            padding=6,
+            padding=8,
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", c["accent"])],
+            lightcolor=[("focus", c["accent"])],
+            darkcolor=[("focus", c["accent"])],
         )
         style.configure(
             "TCombobox",
@@ -151,28 +246,57 @@ class TelegramScraperGUI:
             foreground=c["text"],
             bordercolor=c["border"],
             arrowcolor=c["text"],
-            padding=5,
+            padding=6,
         )
         style.map(
             "TCombobox",
             fieldbackground=[("readonly", c["panel_2"])],
             foreground=[("readonly", c["text"])],
             selectbackground=[("readonly", c["accent"])],
-            selectforeground=[("readonly", "#0f1722")],
+            selectforeground=[("readonly", on_accent)],
+            bordercolor=[("focus", c["accent"])],
         )
 
-        style.configure("TCheckbutton", background=c["bg"], foreground=c["text"], font=("Segoe UI", 10))
-        style.configure("TRadiobutton", background=c["bg"], foreground=c["text"], font=("Segoe UI", 10))
+        style.configure("TCheckbutton", background=c["bg"], foreground=c["text"], font=ui_font, focuscolor=c["bg"])
+        style.map("TCheckbutton", background=[("active", c["bg"])], foreground=[("active", c["text"])])
+        style.configure("TRadiobutton", background=c["bg"], foreground=c["text"], font=ui_font, focuscolor=c["bg"])
         style.map("TRadiobutton", background=[("active", c["bg"])], foreground=[("active", c["text"])])
         style.configure("TSeparator", background=c["border"])
-        style.configure("TProgressbar", background=c["accent"], troughcolor=c["panel_2"], bordercolor=c["border"], lightcolor=c["accent"], darkcolor=c["accent"])
+        style.configure(
+            "TProgressbar",
+            background=c["accent"],
+            troughcolor=c["panel_2"],
+            bordercolor=c["border"],
+            lightcolor=c["accent"],
+            darkcolor=c["accent"],
+            thickness=8,
+        )
 
-        style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"], relief="solid")
-        style.configure("TLabelframe.Label", background=c["bg"], foreground=c["muted"], font=("Segoe UI", 9))
+        style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"], relief="solid", padding=10)
+        style.configure("TLabelframe.Label", background=c["bg"], foreground=c["muted"], font=ui_font_med)
+        style.configure("Card.TLabelframe", background=c["panel"], bordercolor=c["border"], relief="solid", padding=12)
+        style.configure("Card.TLabelframe.Label", background=c["panel"], foreground=c["accent"], font=ui_font_med)
 
-        style.configure("TNotebook", background=c["bg"], borderwidth=0)
-        style.configure("TNotebook.Tab", background=c["panel_2"], foreground=c["muted"], padding=(14, 8), font=("Segoe UI Semibold", 10))
-        style.map("TNotebook.Tab", background=[("selected", c["accent"]), ("active", c["panel"])], foreground=[("selected", "#0f1722"), ("active", c["text"])])
+        style.configure("TNotebook", background=c["bg"], borderwidth=0, tabmargins=(8, 6, 8, 0))
+        style.configure(
+            "TNotebook.Tab",
+            background=c["bg"],
+            foreground=c["muted"],
+            padding=(18, 10),
+            font=ui_font_med,
+            borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", c["panel"]), ("active", c["panel_2"])],
+            foreground=[("selected", c["accent"]), ("active", c["text"])],
+            expand=[("selected", (0, 0, 0, 0))],
+        )
+
+        style.configure("Vertical.TScrollbar", background=c["panel_2"], troughcolor=c["bg"], bordercolor=c["bg"], arrowcolor=c["muted"], gripcount=0)
+        style.map("Vertical.TScrollbar", background=[("active", c["panel_3"])])
+        style.configure("Horizontal.TScrollbar", background=c["panel_2"], troughcolor=c["bg"], bordercolor=c["bg"], arrowcolor=c["muted"], gripcount=0)
+        style.map("Horizontal.TScrollbar", background=[("active", c["panel_3"])])
 
         self._refresh_manual_widget_theme()
 
@@ -191,6 +315,7 @@ class TelegramScraperGUI:
             "broadcast_manual_targets",
             "broadcast_attachment_box",
             "broadcast_listbox",
+            "broadcast_picked_listbox",
             "broadcast_log_box",
             "sessions_box",
             "broadcast_log_window_text",
@@ -224,48 +349,66 @@ class TelegramScraperGUI:
 
     def _style_text_widget(self, widget: tk.Text, *, font: tuple[str, int] = ("Consolas", 10)) -> None:
         c = self.colors
+        on_accent = "#0a1220" if self.theme_mode.get() == "dark" else "#ffffff"
         widget.configure(
             bg=c["panel_2"],
             fg=c["text"],
             insertbackground=c["text"],
             selectbackground=c["accent"],
-            selectforeground="#0f1722",
+            selectforeground=on_accent,
             highlightbackground=c["border"],
             highlightcolor=c["accent"],
             highlightthickness=1,
+            borderwidth=0,
             relief=tk.FLAT,
+            padx=10,
+            pady=8,
             font=font,
         )
 
     def _style_listbox_widget(self, widget: tk.Listbox, *, font: tuple[str, int] = ("Segoe UI", 10)) -> None:
         c = self.colors
+        on_accent = "#0a1220" if self.theme_mode.get() == "dark" else "#ffffff"
         widget.configure(
             bg=c["panel_2"],
             fg=c["text"],
             selectbackground=c["accent"],
-            selectforeground="#0f1722",
+            selectforeground=on_accent,
             highlightbackground=c["border"],
             highlightcolor=c["accent"],
             highlightthickness=1,
             relief=tk.FLAT,
             font=font,
             bd=0,
+            activestyle="none",
         )
 
     def _build_ui(self) -> None:
-        frame = ttk.Frame(self.root, padding=14)
+        frame = ttk.Frame(self.root, padding=18)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        header = ttk.Label(
-            frame,
-            text="TelegramScraper Rebuild v0.1 - Desktop GUI",
-            style="Header.TLabel",
-        )
-        header.pack(anchor="w")
+        header_row = ttk.Frame(frame)
+        header_row.pack(fill=tk.X)
+        header_left = ttk.Frame(header_row)
+        header_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self.status_var = tk.StringVar(value="Ready")
-        status = ttk.Label(frame, textvariable=self.status_var, foreground=self.colors["ok"])
-        status.pack(anchor="w", pady=(4, 10))
+        ttk.Label(
+            header_left,
+            text="TelegramScraper Rebuild",
+            style="Header.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            header_left,
+            text="Multi-account members scraping, adding & broadcasting · v0.1",
+            style="SubHeader.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
+        status_box = ttk.Frame(header_row)
+        status_box.pack(side=tk.RIGHT, anchor="e")
+        self.status_var = tk.StringVar(value="● Ready")
+        ttk.Label(status_box, textvariable=self.status_var, style="Status.TLabel").pack(anchor="e")
+
+        ttk.Separator(frame, orient="horizontal").pack(fill=tk.X, pady=(12, 12))
 
         notebook = ttk.Notebook(frame)
         notebook.pack(fill=tk.BOTH, expand=True)
@@ -588,7 +731,7 @@ class TelegramScraperGUI:
         action_row = ttk.Frame(frm)
         action_row.grid(row=12, column=0, columnspan=4, sticky="ew", pady=6)
         ttk.Button(action_row, text="Select All", command=self._select_all_broadcast_members).pack(side=tk.LEFT)
-        ttk.Button(action_row, text="Clear Selection", command=self._clear_broadcast_selection).pack(side=tk.LEFT, padx=8)
+        ttk.Button(action_row, text="Clear Selection", command=self._clear_broadcast_selection).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(
             action_row,
             text="Add Selected to Recipients ▼",
@@ -597,6 +740,12 @@ class TelegramScraperGUI:
         ).pack(side=tk.LEFT, padx=(20, 8))
         ttk.Button(action_row, text="Remove from Recipients", command=self._remove_picked_recipients).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_row, text="Clear Recipients", command=self._clear_picked_recipients).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            action_row,
+            text="Hapus Hasil Scrape",
+            style="Danger.TButton",
+            command=self._clear_scraped_members,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
 
         ttk.Label(frm, text="Recipients (broadcast hanya ke list ini bila tidak kosong)", foreground="#666").grid(
             row=13, column=0, columnspan=4, sticky="w", pady=(8, 2)
@@ -680,7 +829,8 @@ class TelegramScraperGUI:
         ).pack(anchor="w")
 
     def _set_status(self, text: str) -> None:
-        self.status_var.set(text)
+        prefix = "● " if not text.startswith("●") else ""
+        self.status_var.set(f"{prefix}{text}")
 
     def _log(self, text: str) -> None:
         self.log_box.insert(tk.END, text + "\n")
@@ -1305,6 +1455,58 @@ class TelegramScraperGUI:
             return
 
         self._apply_broadcast_filter()
+
+    def _clear_scraped_members(self) -> None:
+        total = len(self.broadcast_rows)
+        csv_path = Path(self.config.members_csv)
+        csv_exists = csv_path.exists()
+
+        if total == 0 and not csv_exists:
+            messagebox.showinfo("Hapus Hasil Scrape", "List hasil scrape sudah kosong.")
+            return
+
+        msg_lines = [
+            f"Hapus semua hasil scrape ({total} kontak)?",
+            "",
+            "Tindakan ini akan:",
+            "  - Mengosongkan daftar kontak hasil scrape di GUI",
+        ]
+        if csv_exists:
+            msg_lines.append(f"  - Membackup file {csv_path.name} ke folder backups/ lalu menghapusnya")
+        msg_lines.append("")
+        msg_lines.append("Picked Recipients & Manual Targets TIDAK terhapus.")
+        msg_lines.append("Lanjut?")
+
+        if not messagebox.askyesno("Konfirmasi Hapus", "\n".join(msg_lines)):
+            return
+
+        backup_path: Path | None = None
+        if csv_exists:
+            try:
+                backups_dir = csv_path.parent / "backups"
+                backups_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                backup_path = backups_dir / f"{csv_path.stem}.{ts}{csv_path.suffix}.bak"
+                csv_path.replace(backup_path)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Hapus Hasil Scrape",
+                    f"Gagal backup/hapus {csv_path.name}: {exc}",
+                )
+                return
+
+        self.broadcast_rows = []
+        self.broadcast_filtered_indices = []
+        if hasattr(self, "broadcast_listbox"):
+            self.broadcast_listbox.delete(0, tk.END)
+        self._update_broadcast_contact_stats()
+        self._apply_broadcast_filter()
+
+        if backup_path is not None:
+            self._log_broadcast(f"Hasil scrape dihapus. Backup: {backup_path}")
+            self._log(f"members.csv di-backup ke {backup_path}")
+        else:
+            self._log_broadcast("Hasil scrape (in-memory) dikosongkan.")
 
     def _apply_broadcast_filter(self) -> None:
         if not hasattr(self, "broadcast_listbox"):
