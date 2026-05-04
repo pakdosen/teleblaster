@@ -94,6 +94,7 @@ class TelegramScraperGUI:
         self.scrape_strict_account: bool = False
         self.broadcast_rows: list[dict] = []
         self.broadcast_filtered_indices: list[int] = []
+        self.broadcast_picked_rows: list[dict] = []
         self.broadcast_attachments: list[str] = []
         self.broadcast_log_lines: list[str] = []
 
@@ -584,30 +585,53 @@ class TelegramScraperGUI:
         self.broadcast_listbox.configure(yscrollcommand=self.broadcast_listbox_scroll.set)
         self._style_listbox_widget(self.broadcast_listbox)
 
-        ttk.Button(frm, text="Select All", command=self._select_all_broadcast_members).grid(row=12, column=0, sticky="w", pady=6)
-        ttk.Button(frm, text="Clear Selection", command=self._clear_broadcast_selection).grid(
-            row=12, column=1, sticky="w", padx=8, pady=6
+        action_row = ttk.Frame(frm)
+        action_row.grid(row=12, column=0, columnspan=4, sticky="ew", pady=6)
+        ttk.Button(action_row, text="Select All", command=self._select_all_broadcast_members).pack(side=tk.LEFT)
+        ttk.Button(action_row, text="Clear Selection", command=self._clear_broadcast_selection).pack(side=tk.LEFT, padx=8)
+        ttk.Button(
+            action_row,
+            text="Add Selected to Recipients ▼",
+            style="Accent.TButton",
+            command=self._add_selected_to_picked,
+        ).pack(side=tk.LEFT, padx=(20, 8))
+        ttk.Button(action_row, text="Remove from Recipients", command=self._remove_picked_recipients).pack(side=tk.LEFT, padx=4)
+        ttk.Button(action_row, text="Clear Recipients", command=self._clear_picked_recipients).pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(frm, text="Recipients (broadcast hanya ke list ini bila tidak kosong)", foreground="#666").grid(
+            row=13, column=0, columnspan=4, sticky="w", pady=(8, 2)
         )
+        picked_wrap = ttk.Frame(frm)
+        picked_wrap.grid(row=14, column=0, columnspan=4, sticky="nsew")
+        picked_wrap.grid_columnconfigure(0, weight=1)
+        picked_wrap.grid_rowconfigure(0, weight=1)
+
+        self.broadcast_picked_listbox = tk.Listbox(picked_wrap, height=7, width=96, selectmode=tk.EXTENDED)
+        self.broadcast_picked_listbox.grid(row=0, column=0, sticky="nsew")
+        self._style_listbox_widget(self.broadcast_picked_listbox)
+        self.broadcast_picked_listbox_scroll = ttk.Scrollbar(picked_wrap, orient=tk.VERTICAL, command=self.broadcast_picked_listbox.yview)
+        self.broadcast_picked_listbox_scroll.grid(row=0, column=1, sticky="ns")
+        self.broadcast_picked_listbox.configure(yscrollcommand=self.broadcast_picked_listbox_scroll.set)
 
         self.broadcast_last_log_var = tk.StringVar(value="Last log: -")
         ttk.Label(frm, textvariable=self.broadcast_last_log_var, foreground="#666").grid(
-            row=13, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=15, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
 
-        ttk.Label(frm, text="Broadcast Activity Log", foreground="#666").grid(row=14, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(frm, text="Broadcast Activity Log", foreground="#666").grid(row=16, column=0, sticky="w", pady=(6, 0))
         self.broadcast_log_box = tk.Text(frm, height=6, width=96, wrap=tk.WORD, font=("Consolas", 9))
-        self.broadcast_log_box.grid(row=15, column=0, columnspan=4, sticky="ew")
+        self.broadcast_log_box.grid(row=17, column=0, columnspan=4, sticky="ew")
         self._style_text_widget(self.broadcast_log_box, font=("Consolas", 9))
 
         self.broadcast_progress_var = tk.StringVar(value="Progress: 0/0 | Sent: 0 | Failed: 0")
         ttk.Label(frm, textvariable=self.broadcast_progress_var, foreground="#0078D4").grid(
-            row=16, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=18, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
 
         self.broadcast_progress = ttk.Progressbar(frm, mode="determinate", maximum=100, value=0)
-        self.broadcast_progress.grid(row=16, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        self.broadcast_progress.grid(row=19, column=0, columnspan=4, sticky="ew", pady=(2, 0))
 
-        frm.grid_rowconfigure(10, weight=1)
+        frm.grid_rowconfigure(11, weight=1)
 
     def _build_sessions_tab(self) -> None:
         frm = self.tab_sessions
@@ -1325,8 +1349,9 @@ class TelegramScraperGUI:
         total = len(self.broadcast_rows)
         selected = len(self.broadcast_listbox.curselection()) if hasattr(self, "broadcast_listbox") else 0
         manual = len(self._parse_manual_targets()) if hasattr(self, "broadcast_manual_targets") else 0
+        picked = len(self.broadcast_picked_rows) if hasattr(self, "broadcast_picked_rows") else 0
         self.broadcast_count_var.set(
-            f"Contacts: {shown} shown / {total} total | Selected: {selected} | Manual: {manual}"
+            f"Contacts: {shown} shown / {total} total | Selected: {selected} | Picked: {picked} | Manual: {manual}"
         )
 
     def _on_broadcast_selection_changed(self, _event=None) -> None:
@@ -1468,6 +1493,68 @@ class TelegramScraperGUI:
     def _clear_broadcast_selection(self) -> None:
         self.broadcast_listbox.selection_clear(0, tk.END)
         self._update_broadcast_contact_stats()
+
+    def _format_member_label(self, row: dict) -> str:
+        name = (row.get("Name") or "").strip() or "<No Name>"
+        username = (row.get("Username") or "").strip()
+        username_text = f"@{username}" if username else "-"
+        uid = (row.get("ID") or "").strip()
+        return f"{name} | {username_text} | {uid}"
+
+    def _refresh_picked_listbox(self) -> None:
+        if not hasattr(self, "broadcast_picked_listbox"):
+            return
+        self.broadcast_picked_listbox.delete(0, tk.END)
+        for row in self.broadcast_picked_rows:
+            self.broadcast_picked_listbox.insert(tk.END, self._format_member_label(row))
+        self._update_broadcast_contact_stats()
+
+    def _add_selected_to_picked(self) -> None:
+        if not hasattr(self, "broadcast_listbox"):
+            return
+        sel = self.broadcast_listbox.curselection()
+        if not sel:
+            messagebox.showinfo("Recipients", "Pilih dulu satu/lebih kontak di list scraping")
+            return
+
+        existing_ids = {(r.get("ID") or "").strip() for r in self.broadcast_picked_rows}
+        added = 0
+        for idx in sel:
+            if 0 <= idx < len(self.broadcast_filtered_indices):
+                src_idx = self.broadcast_filtered_indices[idx]
+                row = self.broadcast_rows[src_idx]
+                rid = (row.get("ID") or "").strip()
+                if rid and rid in existing_ids:
+                    continue
+                self.broadcast_picked_rows.append(dict(row))
+                if rid:
+                    existing_ids.add(rid)
+                added += 1
+
+        self._refresh_picked_listbox()
+        self._log_broadcast(f"Recipients: tambah {added} kontak (total: {len(self.broadcast_picked_rows)})")
+
+    def _remove_picked_recipients(self) -> None:
+        if not hasattr(self, "broadcast_picked_listbox"):
+            return
+        sel = self.broadcast_picked_listbox.curselection()
+        if not sel:
+            messagebox.showinfo("Recipients", "Pilih dulu kontak di list Recipients yang akan dihapus")
+            return
+        keep = [row for idx, row in enumerate(self.broadcast_picked_rows) if idx not in set(sel)]
+        removed = len(self.broadcast_picked_rows) - len(keep)
+        self.broadcast_picked_rows = keep
+        self._refresh_picked_listbox()
+        self._log_broadcast(f"Recipients: hapus {removed} kontak (sisa: {len(self.broadcast_picked_rows)})")
+
+    def _clear_picked_recipients(self) -> None:
+        if not self.broadcast_picked_rows:
+            return
+        if not messagebox.askyesno("Recipients", f"Kosongkan list Recipients ({len(self.broadcast_picked_rows)} kontak)?"):
+            return
+        self.broadcast_picked_rows = []
+        self._refresh_picked_listbox()
+        self._log_broadcast("Recipients: dikosongkan")
 
     async def _scrape_visible(self, password: str, target: str) -> None:
         rows: list[dict] = []
@@ -1984,27 +2071,36 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Isi text/link atau tambahkan attachment dulu")
             return
 
+        picked_rows_snapshot: list[dict] = list(self.broadcast_picked_rows) if hasattr(self, "broadcast_picked_rows") else []
+        use_picked = bool(picked_rows_snapshot)
+
         selected_indices = tuple(self.broadcast_listbox.curselection()) if hasattr(self, "broadcast_listbox") else tuple()
         selected_only = bool(self.broadcast_selected_only.get()) if hasattr(self, "broadcast_selected_only") else False
 
-        try:
-            selected_ids = self._resolve_selected_ids(selected_only, selected_indices)
-        except Exception as exc:
-            messagebox.showwarning("Broadcast", str(exc))
-            return
+        if use_picked:
+            selected_ids: set[str] | None = None  # picked drives the recipient list directly
+        else:
+            try:
+                selected_ids = self._resolve_selected_ids(selected_only, selected_indices)
+            except Exception as exc:
+                messagebox.showwarning("Broadcast", str(exc))
+                return
 
         all_rows_preview = read_members_csv(self.config.members_csv)
         manual_rows_preview = self._build_manual_recipient_rows()
         manual_rows_preview = self._enrich_manual_rows_with_known_data(manual_rows_preview, all_rows_preview)
-        if not all_rows_preview and not manual_rows_preview:
+        if not all_rows_preview and not manual_rows_preview and not picked_rows_snapshot:
             messagebox.showwarning("Broadcast", "members.csv kosong")
             return
 
-        preview_rows = all_rows_preview
-        if selected_ids is not None:
-            preview_rows = [r for r in all_rows_preview if (r.get("ID") or "").strip() in selected_ids]
-            if not preview_rows:
-                self._log_broadcast("Tidak ada member scrape yang terpilih; hanya manual targets yang akan dipakai jika ada")
+        if use_picked:
+            preview_rows = list(picked_rows_snapshot)
+        else:
+            preview_rows = all_rows_preview
+            if selected_ids is not None:
+                preview_rows = [r for r in all_rows_preview if (r.get("ID") or "").strip() in selected_ids]
+                if not preview_rows:
+                    self._log_broadcast("Tidak ada member scrape yang terpilih; hanya manual targets yang akan dipakai jika ada")
 
         preview_rows = [{**row, "_source": "csv"} for row in preview_rows]
         preview_rows = self._merge_recipients(preview_rows, manual_rows_preview)
@@ -2031,6 +2127,10 @@ class TelegramScraperGUI:
             self._log_broadcast(
                 f"Broadcast akan menggunakan akun terpilih: {mask_phone(broadcast_account_phone)} (rotasi dimatikan)"
             )
+        if use_picked:
+            self._log_broadcast(
+                f"Broadcast pakai Recipients list: {len(picked_rows_snapshot)} kontak (mode pick; selection di list scraping diabaikan)"
+            )
 
         async def _job():
             html = self._build_broadcast_html()
@@ -2040,12 +2140,15 @@ class TelegramScraperGUI:
             all_rows = read_members_csv(self.config.members_csv)
             manual_rows = self._build_manual_recipient_rows()
             manual_rows = self._enrich_manual_rows_with_known_data(manual_rows, all_rows)
-            if not all_rows and not manual_rows:
+            if not all_rows and not manual_rows and not picked_rows_snapshot:
                 raise RuntimeError("members.csv kosong dan manual targets juga kosong")
 
-            rows = all_rows
-            if selected_ids is not None:
-                rows = [r for r in all_rows if (r.get("ID") or "").strip() in selected_ids]
+            if use_picked:
+                rows = list(picked_rows_snapshot)
+            else:
+                rows = all_rows
+                if selected_ids is not None:
+                    rows = [r for r in all_rows if (r.get("ID") or "").strip() in selected_ids]
             rows = [{**row, "_source": "csv"} for row in rows]
             rows = self._merge_recipients(rows, manual_rows)
             if not rows:
