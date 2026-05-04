@@ -1822,7 +1822,14 @@ class TelegramScraperGUI:
             return set()
         return selected_ids
 
-    def _build_broadcast_preview(self, recipients_count: int, direct_text: str, links: list[str], attachments: list[str]) -> str:
+    def _build_broadcast_preview(
+        self,
+        recipients_count: int,
+        direct_text: str,
+        links: list[str],
+        attachments: list[str],
+        at_risk_ids: list[str] | None = None,
+    ) -> str:
         lines = [
             "Konfirmasi Broadcast",
             "",
@@ -1831,6 +1838,25 @@ class TelegramScraperGUI:
             f"Links: {len(links)}",
             "",
         ]
+
+        at_risk_ids = at_risk_ids or []
+        if at_risk_ids:
+            lines.append(
+                f"WARN: {len(at_risk_ids)} target adalah numeric ID tanpa @username & tanpa access_hash."
+            )
+            lines.append(
+                "Telegram tidak bisa kirim ke ID yang belum pernah dikenal akun ini."
+            )
+            lines.append(
+                "Ini akan di-probe via group Anda (cap 500); yang tetap tidak ketemu akan FAIL."
+            )
+            lines.append("Tip: pakai @username, atau scrape group berisi user ini dulu.")
+            lines.append("ID berisiko (5 pertama):")
+            for rid in at_risk_ids[:5]:
+                lines.append(f"- {rid}")
+            if len(at_risk_ids) > 5:
+                lines.append(f"- ... (+{len(at_risk_ids) - 5} more)")
+            lines.append("")
 
         if direct_text:
             compact = re.sub(r"\s+", " ", direct_text).strip()
@@ -1983,7 +2009,8 @@ class TelegramScraperGUI:
             except Exception:
                 pass
 
-        # Last fallback: probe a subset of joined groups and try to resolve member by ID.
+        # Last fallback: probe joined groups and try to resolve member by ID.
+        # Higher cap than before so users with many groups still get a chance to find the target.
         try:
             checked = 0
             async for dialog in app.get_dialogs():
@@ -2000,7 +2027,7 @@ class TelegramScraperGUI:
                 except Exception:
                     pass
 
-                if checked >= 20:
+                if checked >= 500:
                     break
         except Exception:
             pass
@@ -2108,15 +2135,31 @@ class TelegramScraperGUI:
             messagebox.showwarning("Broadcast", "Tidak ada target broadcast setelah filter/manual targets")
             return
 
+        # Pre-broadcast risk audit: numeric IDs without username and without access hash
+        # cannot be reached by Telegram unless a probe finds them in your joined groups.
+        at_risk_ids = [
+            (row.get("ID") or "").strip()
+            for row in preview_rows
+            if (row.get("ID") or "").strip().isdigit()
+            and not (row.get("Username") or "").strip()
+            and not (row.get("Access Hash") or "").strip()
+        ]
         confirm_text = self._build_broadcast_preview(
             recipients_count=len(preview_rows),
             direct_text=direct_text,
             links=links,
             attachments=attachments,
+            at_risk_ids=at_risk_ids,
         )
         if not messagebox.askyesno("Confirm Broadcast", confirm_text):
             self._log_broadcast("Broadcast dibatalkan user")
             return
+
+        if at_risk_ids:
+            self._log_broadcast(
+                f"WARN: {len(at_risk_ids)} target adalah numeric ID tanpa @username/access_hash; "
+                "akan di-probe via dialog group (cap 500). Yang tetap gagal akan masuk failed."
+            )
 
         broadcast_account_phone = (
             self._parse_account_choice(self.broadcast_account.get())
@@ -2200,7 +2243,11 @@ class TelegramScraperGUI:
                                     access_hash = await self._resolve_access_hash_with_hints(app, int(uid), group_id_raw)
 
                                 if access_hash is None:
-                                    raise RuntimeError("Access hash tidak tersedia untuk ID target (gunakan username/link atau scrape ulang)")
+                                    raise RuntimeError(
+                                        f"Akun tidak kenal user ID {uid}: tidak ada access hash di session/CSV "
+                                        "dan user tidak ditemukan di group manapun yang Anda ikuti. "
+                                        "Solusi: pakai @username, atau scrape dulu group yang berisi user ini."
+                                    )
 
                                 await app.invoke(
                                     raw.functions.users.GetUsers(
