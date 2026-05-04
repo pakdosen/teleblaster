@@ -15,7 +15,7 @@ from PIL import Image, ImageTk
 from pyrogram import Client
 from pyrogram import raw
 from pyrogram.enums import ChatMembersFilter, ChatType, MessageEntityType, ParseMode
-from pyrogram.errors import PeerIdInvalid, SessionPasswordNeeded
+from pyrogram.errors import FloodWait, PeerIdInvalid, SessionPasswordNeeded
 from pyrogram.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo
 
 from account_manager import AccountManager
@@ -26,6 +26,8 @@ from utils import append_members_dedup, ensure_paths, mask_phone, normalize_chat
 
 
 class TelegramScraperGUI:
+    AUTO_ACCOUNT_LABEL = "Auto (rotasi semua akun)"
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("TelegramScraper Rebuild GUI")
@@ -89,6 +91,7 @@ class TelegramScraperGUI:
         self._otp_ready_for_completion = False
         self.group_candidates: list[dict] = []
         self.scrape_phone_hint: str | None = None
+        self.scrape_strict_account: bool = False
         self.broadcast_rows: list[dict] = []
         self.broadcast_filtered_indices: list[int] = []
         self.broadcast_attachments: list[str] = []
@@ -392,38 +395,46 @@ class TelegramScraperGUI:
 
         ttk.Label(frm, text="Scrape Members", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Label(frm, text="Mode").grid(row=1, column=0, sticky="w")
+        ttk.Label(frm, text="Akun").grid(row=1, column=0, sticky="w")
+        self.scrape_account = ttk.Combobox(frm, width=36, state="readonly", values=[self.AUTO_ACCOUNT_LABEL])
+        self.scrape_account.set(self.AUTO_ACCOUNT_LABEL)
+        self.scrape_account.grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Button(frm, text="Refresh Akun", command=self._refresh_account_pickers).grid(
+            row=1, column=2, sticky="w", padx=6
+        )
+
+        ttk.Label(frm, text="Mode").grid(row=2, column=0, sticky="w")
         self.scrape_mode = ttk.Combobox(frm, width=28, state="readonly", values=["Visible Members", "Hidden Members"])
         self.scrape_mode.set("Visible Members")
-        self.scrape_mode.grid(row=1, column=1, sticky="w", padx=8)
+        self.scrape_mode.grid(row=2, column=1, sticky="w", padx=8)
 
-        ttk.Label(frm, text="Encryption Password").grid(row=2, column=0, sticky="w")
+        ttk.Label(frm, text="Encryption Password").grid(row=3, column=0, sticky="w")
         self.scrape_password = ttk.Entry(frm, show="*", width=32)
-        self.scrape_password.grid(row=2, column=1, sticky="w", padx=8)
+        self.scrape_password.grid(row=3, column=1, sticky="w", padx=8)
 
-        ttk.Label(frm, text="Group username/link").grid(row=3, column=0, sticky="w")
+        ttk.Label(frm, text="Group username/link").grid(row=4, column=0, sticky="w")
         self.scrape_target = ttk.Entry(frm, width=48)
-        self.scrape_target.grid(row=3, column=1, sticky="w", padx=8)
+        self.scrape_target.grid(row=4, column=1, sticky="w", padx=8)
 
-        ttk.Button(frm, text="Run Scrape", style="Accent.TButton", command=self._run_scrape).grid(row=4, column=1, sticky="w", padx=8, pady=8)
+        ttk.Button(frm, text="Run Scrape", style="Accent.TButton", command=self._run_scrape).grid(row=5, column=1, sticky="w", padx=8, pady=8)
 
         ttk.Button(frm, text="Load My Joined Groups", command=self._load_joined_groups).grid(
-            row=4, column=2, sticky="w", padx=6, pady=8
+            row=5, column=2, sticky="w", padx=6, pady=8
         )
 
         self.group_listbox = tk.Listbox(frm, height=9, width=78)
-        self.group_listbox.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self.group_listbox.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 0))
         self._style_listbox_widget(self.group_listbox)
 
         ttk.Button(frm, text="Use Selected Group", command=self._use_selected_group).grid(
-            row=7, column=0, sticky="w", pady=6
+            row=8, column=0, sticky="w", pady=6
         )
 
         ttk.Label(
             frm,
             text="Hasil disimpan ke members.csv",
             foreground="#666",
-        ).grid(row=8, column=0, columnspan=3, sticky="w")
+        ).grid(row=9, column=0, columnspan=3, sticky="w")
 
     def _build_add_tab(self) -> None:
         frm = self.tab_add
@@ -455,32 +466,40 @@ class TelegramScraperGUI:
 
         ttk.Label(frm, text="Broadcast Message", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Label(frm, text="Encryption Password").grid(row=1, column=0, sticky="w")
-        self.broadcast_password = ttk.Entry(frm, show="*", width=32)
-        self.broadcast_password.grid(row=1, column=1, sticky="ew", padx=8)
+        ttk.Label(frm, text="Akun").grid(row=1, column=0, sticky="w")
+        self.broadcast_account = ttk.Combobox(frm, width=36, state="readonly", values=[self.AUTO_ACCOUNT_LABEL])
+        self.broadcast_account.set(self.AUTO_ACCOUNT_LABEL)
+        self.broadcast_account.grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Button(frm, text="Refresh Akun", command=self._refresh_account_pickers).grid(
+            row=1, column=2, sticky="w", padx=6
+        )
 
-        ttk.Label(frm, text="Markdown file").grid(row=2, column=0, sticky="w")
+        ttk.Label(frm, text="Encryption Password").grid(row=2, column=0, sticky="w")
+        self.broadcast_password = ttk.Entry(frm, show="*", width=32)
+        self.broadcast_password.grid(row=2, column=1, sticky="ew", padx=8)
+
+        ttk.Label(frm, text="Markdown file").grid(row=3, column=0, sticky="w")
         self.broadcast_file = ttk.Entry(frm, width=52)
         self.broadcast_file.insert(0, self.config.template_file)
-        self.broadcast_file.grid(row=2, column=1, columnspan=2, sticky="ew", padx=8)
-        ttk.Button(frm, text="Browse", command=self._browse_md).grid(row=2, column=3, padx=6, sticky="ew")
+        self.broadcast_file.grid(row=3, column=1, columnspan=2, sticky="ew", padx=8)
+        ttk.Button(frm, text="Browse", command=self._browse_md).grid(row=3, column=3, padx=6, sticky="ew")
 
-        ttk.Label(frm, text="Broadcast text (langsung)").grid(row=3, column=0, sticky="w")
+        ttk.Label(frm, text="Broadcast text (langsung)").grid(row=4, column=0, sticky="w")
         self.broadcast_text = tk.Text(frm, height=4, width=70, wrap=tk.WORD)
-        self.broadcast_text.grid(row=3, column=1, columnspan=3, sticky="ew", padx=8)
+        self.broadcast_text.grid(row=4, column=1, columnspan=3, sticky="ew", padx=8)
         self._style_text_widget(self.broadcast_text, font=("Segoe UI", 10))
 
-        ttk.Label(frm, text="Links (opsional, satu per baris)").grid(row=4, column=0, sticky="w")
+        ttk.Label(frm, text="Links (opsional, satu per baris)").grid(row=5, column=0, sticky="w")
         self.broadcast_links = tk.Text(frm, height=3, width=70, wrap=tk.WORD)
-        self.broadcast_links.grid(row=4, column=1, columnspan=3, sticky="ew", padx=8)
+        self.broadcast_links.grid(row=5, column=1, columnspan=3, sticky="ew", padx=8)
         self._style_text_widget(self.broadcast_links, font=("Segoe UI", 10))
 
-        ttk.Label(frm, text="Attachments (image/video/document)").grid(row=5, column=0, sticky="w")
+        ttk.Label(frm, text="Attachments (image/video/document)").grid(row=6, column=0, sticky="w")
         self.broadcast_attachment_box = tk.Listbox(frm, height=4, width=70)
-        self.broadcast_attachment_box.grid(row=5, column=1, columnspan=2, sticky="ew", padx=8)
+        self.broadcast_attachment_box.grid(row=6, column=1, columnspan=2, sticky="ew", padx=8)
         self._style_listbox_widget(self.broadcast_attachment_box)
         attach_btns = ttk.Frame(frm)
-        attach_btns.grid(row=5, column=3, sticky="nsew", padx=(0, 4))
+        attach_btns.grid(row=6, column=3, sticky="nsew", padx=(0, 4))
         ttk.Button(attach_btns, text="Add Files", command=self._add_broadcast_attachments).pack(fill=tk.X)
         ttk.Button(attach_btns, text="Remove Selected", command=self._remove_selected_broadcast_attachment).pack(fill=tk.X, pady=4)
         ttk.Button(attach_btns, text="Clear Files", command=self._clear_broadcast_attachments).pack(fill=tk.X)
@@ -501,49 +520,49 @@ class TelegramScraperGUI:
             frm,
             text="Broadcast only selected members",
             variable=self.broadcast_selected_only,
-        ).grid(row=6, column=0, sticky="w")
+        ).grid(row=7, column=0, sticky="w")
 
-        ttk.Button(frm, text="Run Broadcast", style="Accent.TButton", command=self._run_broadcast).grid(row=6, column=1, sticky="w", padx=8, pady=8)
+        ttk.Button(frm, text="Run Broadcast", style="Accent.TButton", command=self._run_broadcast).grid(row=7, column=1, sticky="w", padx=8, pady=8)
 
         ttk.Button(frm, text="Reload Scraped Members", command=self._reload_broadcast_members).grid(
-            row=6, column=2, sticky="ew", padx=6, pady=8
+            row=7, column=2, sticky="ew", padx=6, pady=8
         )
 
         ttk.Button(frm, text="Open Broadcast Log", command=self._open_broadcast_log_window).grid(
-            row=6, column=3, sticky="ew", padx=6, pady=8
+            row=7, column=3, sticky="ew", padx=6, pady=8
         )
 
-        ttk.Label(frm, text="Search").grid(row=7, column=0, sticky="w")
+        ttk.Label(frm, text="Search").grid(row=8, column=0, sticky="w")
         self.broadcast_search = ttk.Entry(frm, width=40)
-        self.broadcast_search.grid(row=7, column=1, columnspan=2, sticky="ew", padx=8)
+        self.broadcast_search.grid(row=8, column=1, columnspan=2, sticky="ew", padx=8)
         self.broadcast_search.bind("<KeyRelease>", self._on_broadcast_search_changed)
-        ttk.Button(frm, text="Clear", command=self._clear_broadcast_search).grid(row=7, column=3, sticky="ew", padx=6)
+        ttk.Button(frm, text="Clear", command=self._clear_broadcast_search).grid(row=8, column=3, sticky="ew", padx=6)
 
         ttk.Label(frm, text="Manual targets (opsional: username/ID/link, pisah baris atau koma)").grid(
-            row=8, column=0, sticky="w", pady=(6, 0)
+            row=9, column=0, sticky="w", pady=(6, 0)
         )
         self.broadcast_manual_targets = tk.Text(frm, height=3, width=70, wrap=tk.WORD)
-        self.broadcast_manual_targets.grid(row=8, column=1, columnspan=2, sticky="ew", padx=8, pady=(6, 0))
+        self.broadcast_manual_targets.grid(row=9, column=1, columnspan=2, sticky="ew", padx=8, pady=(6, 0))
         self.broadcast_manual_targets.bind("<KeyRelease>", self._on_manual_targets_changed)
         self._style_text_widget(self.broadcast_manual_targets, font=("Segoe UI", 10))
 
         manual_btns = ttk.Frame(frm)
-        manual_btns.grid(row=8, column=3, sticky="nsew", padx=6, pady=(6, 0))
+        manual_btns.grid(row=9, column=3, sticky="nsew", padx=6, pady=(6, 0))
         ttk.Button(manual_btns, text="Load .txt", command=self._load_manual_targets_file).pack(fill=tk.X)
         ttk.Button(manual_btns, text="Clear Targets", command=self._clear_manual_targets).pack(fill=tk.X, pady=(4, 0))
 
         self.broadcast_count_var = tk.StringVar(value="Contacts: 0 shown / 0 total | Selected: 0")
         ttk.Label(frm, textvariable=self.broadcast_count_var, foreground="#666").grid(
-            row=9, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=10, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
 
         self.broadcast_empty_var = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self.broadcast_empty_var, style="Muted.TLabel").grid(
-            row=9, column=3, sticky="e", pady=(6, 0)
+            row=10, column=3, sticky="e", pady=(6, 0)
         )
 
         list_wrap = ttk.Frame(frm)
-        list_wrap.grid(row=10, column=0, columnspan=4, sticky="nsew", pady=(4, 0))
+        list_wrap.grid(row=11, column=0, columnspan=4, sticky="nsew", pady=(4, 0))
         list_wrap.grid_columnconfigure(0, weight=1)
         list_wrap.grid_rowconfigure(0, weight=1)
 
@@ -557,24 +576,24 @@ class TelegramScraperGUI:
         self.broadcast_listbox.configure(yscrollcommand=self.broadcast_listbox_scroll.set)
         self._style_listbox_widget(self.broadcast_listbox)
 
-        ttk.Button(frm, text="Select All", command=self._select_all_broadcast_members).grid(row=11, column=0, sticky="w", pady=6)
+        ttk.Button(frm, text="Select All", command=self._select_all_broadcast_members).grid(row=12, column=0, sticky="w", pady=6)
         ttk.Button(frm, text="Clear Selection", command=self._clear_broadcast_selection).grid(
-            row=11, column=1, sticky="w", padx=8, pady=6
+            row=12, column=1, sticky="w", padx=8, pady=6
         )
 
         self.broadcast_last_log_var = tk.StringVar(value="Last log: -")
         ttk.Label(frm, textvariable=self.broadcast_last_log_var, foreground="#666").grid(
-            row=12, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=13, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
 
-        ttk.Label(frm, text="Broadcast Activity Log", foreground="#666").grid(row=13, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(frm, text="Broadcast Activity Log", foreground="#666").grid(row=14, column=0, sticky="w", pady=(6, 0))
         self.broadcast_log_box = tk.Text(frm, height=6, width=96, wrap=tk.WORD, font=("Consolas", 9))
-        self.broadcast_log_box.grid(row=14, column=0, columnspan=4, sticky="ew")
+        self.broadcast_log_box.grid(row=15, column=0, columnspan=4, sticky="ew")
         self._style_text_widget(self.broadcast_log_box, font=("Consolas", 9))
 
         self.broadcast_progress_var = tk.StringVar(value="Progress: 0/0 | Sent: 0 | Failed: 0")
         ttk.Label(frm, textvariable=self.broadcast_progress_var, foreground="#0078D4").grid(
-            row=15, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=16, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
 
         self.broadcast_progress = ttk.Progressbar(frm, mode="determinate", maximum=100, value=0)
@@ -1046,6 +1065,14 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Password dan target group wajib diisi")
             return
 
+        selected_phone = self._parse_account_choice(self.scrape_account.get()) if hasattr(self, "scrape_account") else None
+        if selected_phone:
+            self.scrape_phone_hint = selected_phone
+            self.scrape_strict_account = True
+            self._log(f"Scrape menggunakan akun terpilih: {mask_phone(selected_phone)}")
+        else:
+            self.scrape_strict_account = False
+
         async def _job():
             if mode == "Visible Members":
                 await self._scrape_visible(password, target)
@@ -1060,13 +1087,18 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Isi Encryption Password dulu")
             return
 
+        selected_phone = self._parse_account_choice(self.scrape_account.get()) if hasattr(self, "scrape_account") else None
+
         async def _job():
             sessions = self.manager.list_sessions()
             if not sessions:
                 raise RuntimeError("Belum ada session login")
 
-            # Use first available account; if all cooldown, still try first stored account for group listing.
-            phone = self.manager.get_next_phone() or sessions[0].phone
+            if selected_phone:
+                phone = selected_phone
+            else:
+                # Use first available account; if all cooldown, still try first stored account for group listing.
+                phone = self.manager.get_next_phone() or sessions[0].phone
             app = await self.manager.build_client(phone, password)
             groups: list[dict] = []
             try:
@@ -1146,9 +1178,10 @@ class TelegramScraperGUI:
 
     async def _execute_with_scrape_hint(self, password: str, target: str, operation):
         preferred_phone = (self.scrape_phone_hint or "").strip()
+        strict = bool(getattr(self, "scrape_strict_account", False))
 
-        # For numeric group IDs, find an account that can actually resolve this target.
-        if target.strip().lstrip("-").isdigit():
+        # For numeric group IDs, find an account that can actually resolve this target — only when not strict.
+        if not strict and target.strip().lstrip("-").isdigit():
             discovered = await self._find_phone_with_target_access(password, target, preferred_phone=preferred_phone)
             if discovered:
                 preferred_phone = discovered
@@ -1162,6 +1195,13 @@ class TelegramScraperGUI:
                 result = await operation(app, preferred_phone)
                 return result, preferred_phone
             except Exception as exc:
+                if strict:
+                    self._post(
+                        lambda p=preferred_phone, e=exc: self._log(
+                            f"Akun terpilih {mask_phone(p)} gagal: {type(e).__name__}: {e}"
+                        )
+                    )
+                    raise
                 self._post(
                     lambda p=preferred_phone, e=exc: self._log(
                         f"Akun hint {p} gagal untuk scrape, fallback ke rotasi akun: {type(e).__name__}: {e}"
@@ -1175,6 +1215,39 @@ class TelegramScraperGUI:
                         pass
 
         return await execute_with_rotation(self.manager, password, operation)
+
+    async def _execute_on_account(self, password: str, account_phone: str | None, operation):
+        """Execute `operation(app, phone)` either on a specific account (no rotation) or via rotation.
+
+        When `account_phone` is given, the operation runs only on that account. FloodWait < 1h is
+        respected with a single retry; FloodWait >= 1h sets the cooldown and surfaces a clear error.
+        When `account_phone` is None, falls back to `execute_with_rotation`.
+        """
+        if not account_phone:
+            return await execute_with_rotation(self.manager, password, operation)
+
+        app = await self.manager.build_client(account_phone, password)
+        await app.connect()
+        try:
+            try:
+                result = await operation(app, account_phone)
+                return result, account_phone
+            except FloodWait as fw:
+                wait = int(fw.value)
+                if wait >= 3600:
+                    self.manager.set_cooldown(phone=account_phone, seconds=wait)
+                    raise RuntimeError(
+                        f"Akun {mask_phone(account_phone)} kena FloodWait {wait}s; cooldown dipasang. "
+                        "Pilih akun lain di dropdown atau tunggu cooldown habis."
+                    ) from fw
+                await asyncio.sleep(wait + 2)
+                result = await operation(app, account_phone)
+                return result, account_phone
+        finally:
+            try:
+                await app.disconnect()
+            except Exception:
+                pass
 
     def _use_selected_group(self) -> None:
         selected = self.group_listbox.curselection()
@@ -1937,6 +2010,16 @@ class TelegramScraperGUI:
             self._log_broadcast("Broadcast dibatalkan user")
             return
 
+        broadcast_account_phone = (
+            self._parse_account_choice(self.broadcast_account.get())
+            if hasattr(self, "broadcast_account")
+            else None
+        )
+        if broadcast_account_phone:
+            self._log_broadcast(
+                f"Broadcast akan menggunakan akun terpilih: {mask_phone(broadcast_account_phone)} (rotasi dimatikan)"
+            )
+
         async def _job():
             html = self._build_broadcast_html()
             if len(html) > 4096:
@@ -2025,7 +2108,9 @@ class TelegramScraperGUI:
 
                         return True
 
-                    _, used_phone = await execute_with_rotation(self.manager, password, _op)
+                    _, used_phone = await self._execute_on_account(
+                        password, broadcast_account_phone, _op
+                    )
                     sent += 1
                     if source == "csv" and uid:
                         done_ids.add(uid)
@@ -2069,13 +2154,36 @@ class TelegramScraperGUI:
         if not sessions:
             self.sessions_box.insert(tk.END, "Belum ada akun login tersimpan.\n")
             self.sessions_box.insert(tk.END, "Silakan login dari tab Login lalu klik Complete Login/QR Login.\n")
-            return
+        else:
+            self.sessions_box.insert(tk.END, f"Total akun login tersimpan: {len(sessions)}\n\n")
+            for sess in sessions:
+                rem = self.manager.get_cooldown_remaining(sess.phone)
+                status = f"Cooldown {rem}s" if rem else "Active"
+                self.sessions_box.insert(tk.END, f"{sess.phone} | {mask_phone(sess.phone)} | {status}\n")
 
-        self.sessions_box.insert(tk.END, f"Total akun login tersimpan: {len(sessions)}\n\n")
-        for sess in sessions:
-            rem = self.manager.get_cooldown_remaining(sess.phone)
-            status = f"Cooldown {rem}s" if rem else "Active"
-            self.sessions_box.insert(tk.END, f"{sess.phone} | {mask_phone(sess.phone)} | {status}\n")
+        self._refresh_account_pickers()
+
+    def _account_choices(self) -> list[str]:
+        choices = [self.AUTO_ACCOUNT_LABEL]
+        for sess in self.manager.list_sessions():
+            choices.append(f"{sess.phone} | {mask_phone(sess.phone)}")
+        return choices
+
+    def _parse_account_choice(self, value: str) -> str | None:
+        if not value or value == self.AUTO_ACCOUNT_LABEL:
+            return None
+        return value.split("|", 1)[0].strip() or None
+
+    def _refresh_account_pickers(self) -> None:
+        choices = self._account_choices()
+        for combobox_name in ("scrape_account", "broadcast_account"):
+            cb = getattr(self, combobox_name, None)
+            if cb is None:
+                continue
+            current = cb.get()
+            cb.configure(values=choices)
+            if current not in choices:
+                cb.set(self.AUTO_ACCOUNT_LABEL)
 
     def _test_sessions(self) -> None:
         password = self.sessions_password.get().strip()
