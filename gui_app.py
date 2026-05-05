@@ -30,7 +30,7 @@ class TelegramScraperGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("TelegramScraper Rebuild GUI")
+        self.root.title("Telegram Blaster By VibeTool.Club")
         self.root.geometry("1080x800")
         self.root.minsize(1000, 740)
 
@@ -394,12 +394,12 @@ class TelegramScraperGUI:
 
         ttk.Label(
             header_left,
-            text="TelegramScraper Rebuild",
+            text="Telegram Blaster",
             style="Header.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             header_left,
-            text="Multi-account members scraping, adding & broadcasting · v0.1",
+            text="By VibeTool.Club  ·  Multi-account members scraping, adding & broadcasting  ·  v0.1",
             style="SubHeader.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -804,11 +804,24 @@ class TelegramScraperGUI:
         frm.grid_columnconfigure(0, weight=1)
 
     def _build_about_tab(self) -> None:
+        ttk.Label(
+            self.tab_about,
+            text="Telegram Blaster",
+            style="Header.TLabel",
+        ).pack(anchor="w", pady=(4, 2))
+        ttk.Label(
+            self.tab_about,
+            text="By VibeTool.Club  ·  v0.1",
+            style="SubHeader.TLabel",
+        ).pack(anchor="w", pady=(0, 12))
+
         text = (
-            "TelegramScraper Rebuild GUI\n\n"
-            "GUI desktop untuk memudahkan user non-teknis.\n"
-            "Data session disimpan lokal dan terenkripsi.\n"
-            "Gunakan hanya untuk akun/grup yang Anda kelola secara legal."
+            "GUI desktop multi-akun Telegram untuk scraping members, adding members,\n"
+            "dan broadcasting pesan + attachment.\n\n"
+            "Data session disimpan lokal dan terenkripsi (Fernet + PBKDF2).\n"
+            "Gunakan hanya untuk akun/grup yang Anda kelola secara legal.\n"
+            "Patuhi Telegram Terms of Service & hukum lokal Anda.\n\n"
+            "© VibeTool.Club  —  https://vibetool.club"
         )
         ttk.Label(self.tab_about, text=text, justify=tk.LEFT).pack(anchor="w", pady=(2, 12))
 

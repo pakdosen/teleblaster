@@ -2,10 +2,10 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-title TelegramScraper Rebuild
+title Telegram Blaster By VibeTool.Club
 
 echo ========================================================
-echo   TelegramScraper Rebuild - One-Click Launcher
+echo   Telegram Blaster By VibeTool.Club - One-Click Launcher
 echo ========================================================
 echo.
 
