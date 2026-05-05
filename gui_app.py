@@ -2668,14 +2668,124 @@ class TelegramScraperGUI:
         return text
 
 
+def _writable_env_path() -> Path:
+    """Lokasi .env yang ditulis fallback dialog: di sebelah .exe / script."""
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / ".env"
+    return Path(__file__).resolve().parent / ".env"
+
+
+def _prompt_api_credentials(parent: tk.Tk) -> bool:
+    """Pop-up sederhana untuk minta API_ID & API_HASH bila .env kosong.
+
+    Mengembalikan True bila user mengisi & save, False bila batal.
+    Save -> tulis ke .env di sebelah exe dan set os.environ supaya
+    Config.from_env() langsung sukses tanpa restart.
+    """
+    import os
+
+    dialog = tk.Toplevel(parent)
+    dialog.title("Setup awal — Telegram Blaster By VibeTool.Club")
+    dialog.geometry("520x320")
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    intro = (
+        "Aplikasi belum dikonfigurasi.\n\n"
+        "Masukkan API_ID dan API_HASH dari https://my.telegram.org/apps\n"
+        "(login Telegram → My API Apps → buat app baru, ambil nilainya)."
+    )
+    ttk.Label(dialog, text=intro, justify=tk.LEFT, wraplength=480).pack(
+        anchor="w", padx=18, pady=(16, 12)
+    )
+
+    form = ttk.Frame(dialog)
+    form.pack(fill=tk.X, padx=18)
+
+    ttk.Label(form, text="API_ID").grid(row=0, column=0, sticky="w", pady=4)
+    api_id_var = tk.StringVar()
+    ttk.Entry(form, textvariable=api_id_var, width=46).grid(
+        row=0, column=1, sticky="we", pady=4, padx=(8, 0)
+    )
+
+    ttk.Label(form, text="API_HASH").grid(row=1, column=0, sticky="w", pady=4)
+    api_hash_var = tk.StringVar()
+    ttk.Entry(form, textvariable=api_hash_var, width=46).grid(
+        row=1, column=1, sticky="we", pady=4, padx=(8, 0)
+    )
+    form.grid_columnconfigure(1, weight=1)
+
+    status_var = tk.StringVar(value="")
+    ttk.Label(dialog, textvariable=status_var, foreground="#ef5d6f").pack(
+        anchor="w", padx=18, pady=(6, 0)
+    )
+
+    result = {"ok": False}
+
+    def _on_save() -> None:
+        api_id = api_id_var.get().strip()
+        api_hash = api_hash_var.get().strip()
+        if not api_id or not api_hash:
+            status_var.set("API_ID dan API_HASH wajib diisi.")
+            return
+        if not api_id.isdigit():
+            status_var.set("API_ID harus berupa angka.")
+            return
+        env_path = _writable_env_path()
+        try:
+            env_path.write_text(
+                f"API_ID={api_id}\nAPI_HASH={api_hash}\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            status_var.set(f"Gagal menulis .env: {exc}")
+            return
+        os.environ["API_ID"] = api_id
+        os.environ["API_HASH"] = api_hash
+        result["ok"] = True
+        dialog.destroy()
+
+    def _on_cancel() -> None:
+        result["ok"] = False
+        dialog.destroy()
+
+    btn_row = ttk.Frame(dialog)
+    btn_row.pack(fill=tk.X, padx=18, pady=(18, 16))
+    ttk.Button(btn_row, text="Batal", command=_on_cancel).pack(side=tk.RIGHT, padx=(8, 0))
+    ttk.Button(btn_row, text="Simpan & Lanjut", command=_on_save).pack(side=tk.RIGHT)
+
+    dialog.protocol("WM_DELETE_WINDOW", _on_cancel)
+    parent.wait_window(dialog)
+    return result["ok"]
+
+
 def main() -> None:
     root = tk.Tk()
-    try:
-        TelegramScraperGUI(root)
-    except Exception as exc:
-        messagebox.showerror("Startup Error", str(exc))
-        root.destroy()
-        return
+    # Try to start. If env credentials missing, prompt once and retry.
+    for _attempt in range(2):
+        try:
+            TelegramScraperGUI(root)
+            break
+        except ValueError as exc:
+            msg = str(exc)
+            if "API_ID" in msg or "API_HASH" in msg:
+                if _prompt_api_credentials(root):
+                    # Clear any partial widgets from failed init before retry.
+                    for child in list(root.winfo_children()):
+                        try:
+                            child.destroy()
+                        except Exception:
+                            pass
+                    continue
+            messagebox.showerror("Startup Error", msg)
+            root.destroy()
+            return
+        except Exception as exc:
+            messagebox.showerror("Startup Error", str(exc))
+            root.destroy()
+            return
     root.mainloop()
 
 

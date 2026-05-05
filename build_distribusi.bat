@@ -56,17 +56,27 @@ REM 4. Cek .env wajib ada (akan di-embed ke distribusi)
 REM ------------------------------------------------------------
 if not exist ".env" (
     echo.
-    echo [WARNING] File .env belum ada di folder ini.
-    echo   Distribusi tanpa .env akan minta client mengisi API_ID dan API_HASH sendiri.
-    echo   Untuk client awam, sebaiknya buat .env dulu di folder ini lalu run ulang skrip.
+    echo [ERROR] File .env tidak ditemukan di folder ini.
     echo.
-    set /p CONT="Lanjutkan build tanpa .env? (y/N): "
-    if /I not "!CONT!"=="y" (
-        echo Build dibatalkan.
-        pause
-        exit /b 1
-    )
+    echo   Build dihentikan karena distribusi WAJIB punya .env (berisi API_ID
+    echo   dan API_HASH). Tanpa .env, client harus mengisi credential sendiri,
+    echo   dan itu bertentangan dengan tujuan distribusi "siap pakai".
+    echo.
+    echo   CARA FIX:
+    echo     1. Buka https://my.telegram.org/apps di browser, login dengan
+    echo        nomor Telegram Anda.
+    echo     2. Bagian "App configuration" akan menampilkan App api_id (angka)
+    echo        dan App api_hash (string panjang).
+    echo     3. Buat file ".env" di folder ini, isinya:
+    echo            API_ID=12345678
+    echo            API_HASH=0123456789abcdef0123456789abcdef
+    echo     4. Jalankan ulang build_distribusi.bat
+    echo.
+    pause
+    exit /b 1
 )
+
+echo [INFO] .env terdeteksi, akan di-embed ke distribusi.
 
 REM ------------------------------------------------------------
 REM 5. Bersihkan build lama
