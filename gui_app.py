@@ -112,8 +112,38 @@ class TelegramScraperGUI:
         self.broadcast_attachments: list[str] = []
         self.broadcast_log_lines: list[str] = []
 
+        # Branding logo (cached PhotoImage instances keyed by pixel size).
+        self._logo_path = Path(__file__).resolve().parent / "assets" / "vibetool_logo.png"
+        self._logo_source: Image.Image | None = None
+        self._logo_cache: dict[int, ImageTk.PhotoImage] = {}
+        self._apply_window_icon()
+
         self._build_ui()
         self._refresh_sessions_view()
+
+    def _load_logo(self, size: int) -> ImageTk.PhotoImage | None:
+        if size in self._logo_cache:
+            return self._logo_cache[size]
+        try:
+            if self._logo_source is None:
+                if not self._logo_path.exists():
+                    return None
+                self._logo_source = Image.open(self._logo_path).convert("RGBA")
+            resized = self._logo_source.resize((size, size), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(resized)
+        except Exception:
+            return None
+        self._logo_cache[size] = photo
+        return photo
+
+    def _apply_window_icon(self) -> None:
+        photo = self._load_logo(64)
+        if photo is None:
+            return
+        try:
+            self.root.iconphoto(True, photo)
+        except Exception:
+            pass
 
     def _setup_theme(self) -> None:
         self.colors = self.themes.get(self.theme_mode.get(), self.themes["dark"])
@@ -392,13 +422,21 @@ class TelegramScraperGUI:
         header_left = ttk.Frame(header_row)
         header_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        header_logo = self._load_logo(56)
+        if header_logo is not None:
+            self._header_logo_ref = header_logo  # keep reference alive
+            ttk.Label(header_left, image=header_logo).pack(side=tk.LEFT, padx=(0, 14))
+
+        header_text = ttk.Frame(header_left)
+        header_text.pack(side=tk.LEFT, fill=tk.Y)
+
         ttk.Label(
-            header_left,
+            header_text,
             text="Telegram Blaster",
             style="Header.TLabel",
         ).pack(anchor="w")
         ttk.Label(
-            header_left,
+            header_text,
             text="By VibeTool.Club  ·  Multi-account members scraping, adding & broadcasting  ·  v0.1",
             style="SubHeader.TLabel",
         ).pack(anchor="w", pady=(2, 0))
@@ -804,6 +842,11 @@ class TelegramScraperGUI:
         frm.grid_columnconfigure(0, weight=1)
 
     def _build_about_tab(self) -> None:
+        about_logo = self._load_logo(160)
+        if about_logo is not None:
+            self._about_logo_ref = about_logo  # keep reference alive
+            ttk.Label(self.tab_about, image=about_logo).pack(anchor="w", pady=(4, 8))
+
         ttk.Label(
             self.tab_about,
             text="Telegram Blaster",
