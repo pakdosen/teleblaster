@@ -2451,55 +2451,134 @@ class TelegramScraperGUI:
             failed_count = 0
             total = len(targets)
 
-            for idx, item in enumerate(targets):
-                username = (item.get("username") or "").strip()
-                title = item.get("title", "")
-                if not username:
-                    failed_count += 1
-                    item["status"] = "Skip: tanpa username"
-                    self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
-                    continue
+            # Build & connect client SEKALI di awal batch (per akun) untuk hindari
+            # reconnect overhead 3-10 detik per iterasi. Cache by phone agar mode Auto
+            # tidak reconnect untuk akun yang sama berturut-turut.
+            clients: dict[str, Client] = {}
 
-                link = f"@{username}"
+            async def _get_client(phone: str) -> Client:
+                if phone not in clients:
+                    app = await self.manager.build_client(phone, password)
+                    await app.connect()
+                    clients[phone] = app
+                return clients[phone]
 
+            async def _join_once(app: Client, link: str) -> None:
                 try:
-                    async def _op(app, _phone: str, _link=link):
-                        try:
-                            await app.join_chat(_link)
-                        except Exception as exc:
-                            err = (str(exc) or "").upper()
-                            if "USER_ALREADY_PARTICIPANT" in err or "ALREADY_PARTICIPANT" in err:
-                                return True
-                            raise
-                        return True
-
-                    _, used_phone = await self._execute_on_account(password, account_phone, _op)
-                    joined_count += 1
-                    item["joined"] = True
-                    item["status"] = "Joined"
-                    self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
-                    self._post(
-                        lambda t=title, p=used_phone, n=idx + 1, tot=total: self._log(
-                            f"[Grup Scrapper] Joined {t} via {p} ({n}/{tot})"
-                        )
-                    )
+                    await app.join_chat(link)
                 except Exception as exc:
-                    failed_count += 1
-                    err_text = f"{type(exc).__name__}: {exc}"
-                    item["status"] = f"Failed: {err_text[:60]}"
-                    self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
-                    self._post(
-                        lambda t=title, e=err_text: self._log(f"[Grup Scrapper] Join {t} gagal: {e}")
-                    )
+                    err = (str(exc) or "").upper()
+                    if "USER_ALREADY_PARTICIPANT" in err or "ALREADY_PARTICIPANT" in err:
+                        return
+                    raise
 
-                if idx < total - 1:
-                    d = random_delay(delay_min, delay_max)
-                    self._post(lambda d=d: self._log(f"[Grup Scrapper] Sleep {d:.1f}s sebelum join berikutnya"))
-                    await asyncio.sleep(d)
+            try:
+                # Pre-connect single account agar latency join pertama juga rendah.
+                if account_phone:
+                    try:
+                        await _get_client(account_phone)
+                    except Exception as exc:
+                        self._post(
+                            lambda e=exc: self._log(
+                                f"[Grup Scrapper] Gagal connect ke akun: {type(e).__name__}: {e}"
+                            )
+                        )
+                        return
 
-            summary = f"Grup Scrapper join selesai: ok={joined_count}, gagal={failed_count}, total={total}"
-            self._post(lambda s=summary: self._log(s))
-            self._post(lambda s=summary: messagebox.showinfo("Join Result", s))
+                for idx, item in enumerate(targets):
+                    username = (item.get("username") or "").strip()
+                    title = item.get("title", "")
+                    if not username:
+                        failed_count += 1
+                        item["status"] = "Skip: tanpa username"
+                        self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
+                        continue
+
+                    link = f"@{username}"
+                    used_phone: str | None = None
+                    abort_batch = False
+
+                    try:
+                        if account_phone:
+                            # Single-account mode: 1 connection untuk seluruh batch.
+                            app = await _get_client(account_phone)
+                            try:
+                                await _join_once(app, link)
+                            except FloodWait as fw:
+                                wait = int(fw.value)
+                                if wait >= 3600:
+                                    self.manager.set_cooldown(phone=account_phone, seconds=wait)
+                                    raise RuntimeError(
+                                        f"Akun {mask_phone(account_phone)} kena FloodWait {wait}s; "
+                                        "cooldown dipasang. Pilih akun lain di dropdown atau tunggu."
+                                    ) from fw
+                                self._post(
+                                    lambda w=wait: self._log(
+                                        f"[Grup Scrapper] FloodWait {w}s, retry setelah delay"
+                                    )
+                                )
+                                await asyncio.sleep(wait + 2)
+                                await _join_once(app, link)
+                            used_phone = account_phone
+                        else:
+                            # Auto mode: rotasi via execute_with_rotation (tetap reconnect
+                            # per-iter karena akun bisa berbeda; dedup connection untuk akun
+                            # yang sama tidak trivial dengan rotation policy yang ada).
+                            async def _op(app, _phone: str, _link=link):
+                                await _join_once(app, _link)
+                                return True
+
+                            _, used_phone = await execute_with_rotation(
+                                self.manager, password, _op
+                            )
+
+                        joined_count += 1
+                        item["joined"] = True
+                        item["status"] = "Joined"
+                        self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
+                        self._post(
+                            lambda t=title, p=used_phone, n=idx + 1, tot=total: self._log(
+                                f"[Grup Scrapper] Joined {t} via {p} ({n}/{tot})"
+                            )
+                        )
+                    except Exception as exc:
+                        failed_count += 1
+                        err_text = f"{type(exc).__name__}: {exc}"
+                        item["status"] = f"Failed: {err_text[:60]}"
+                        self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
+                        self._post(
+                            lambda t=title, e=err_text: self._log(
+                                f"[Grup Scrapper] Join {t} gagal: {e}"
+                            )
+                        )
+                        # Cooldown akun-spesifik = batch tidak bisa lanjut.
+                        if account_phone and "cooldown" in err_text.lower():
+                            abort_batch = True
+
+                    if abort_batch:
+                        break
+
+                    if idx < total - 1:
+                        d = random_delay(delay_min, delay_max)
+                        self._post(
+                            lambda d=d: self._log(
+                                f"[Grup Scrapper] Sleep {d:.1f}s sebelum join berikutnya"
+                            )
+                        )
+                        await asyncio.sleep(d)
+
+                summary = (
+                    f"Grup Scrapper join selesai: ok={joined_count}, "
+                    f"gagal={failed_count}, total={total}"
+                )
+                self._post(lambda s=summary: self._log(s))
+                self._post(lambda s=summary: messagebox.showinfo("Join Result", s))
+            finally:
+                for app in clients.values():
+                    try:
+                        await app.disconnect()
+                    except Exception:
+                        pass
 
         self._run_async_job(_job())
 
