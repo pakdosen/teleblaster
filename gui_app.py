@@ -2941,9 +2941,15 @@ class TelegramScraperGUI:
     def _is_video_file(path: str) -> bool:
         return Path(path).suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
+    @staticmethod
+    def _html_to_plain_text(text: str) -> str:
+        text = re.sub(r"<[^>]+>", "", text or "").strip()
+        return html.unescape(text)
+
     async def _send_broadcast_payload(self, app, chat_target, html: str, attachments: list[str]) -> None:
         html = (html or "").strip()
         html_for_caption = html[:1024] if html else ""
+        plain_caption = self._html_to_plain_text(html_for_caption) if html_for_caption else ""
 
         if not attachments:
             if not html:
@@ -2956,13 +2962,41 @@ class TelegramScraperGUI:
             if html and len(html) > 1024:
                 await app.send_message(chat_target, html, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 html_for_caption = ""
+                plain_caption = ""
 
-            if self._is_image_file(path):
-                await app.send_photo(chat_target, path, caption=html_for_caption or None, parse_mode=ParseMode.HTML)
-            elif self._is_video_file(path):
-                await app.send_video(chat_target, path, caption=html_for_caption or None, parse_mode=ParseMode.HTML)
-            else:
-                await app.send_document(chat_target, path, caption=html_for_caption or None, parse_mode=ParseMode.HTML)
+            try:
+                if self._is_image_file(path):
+                    await app.send_photo(
+                        chat_target,
+                        path,
+                        caption=html_for_caption or None,
+                        parse_mode=ParseMode.HTML if html_for_caption else None,
+                    )
+                elif self._is_video_file(path):
+                    await app.send_video(
+                        chat_target,
+                        path,
+                        caption=html_for_caption or None,
+                        parse_mode=ParseMode.HTML if html_for_caption else None,
+                    )
+                else:
+                    await app.send_document(
+                        chat_target,
+                        path,
+                        caption=html_for_caption or None,
+                        parse_mode=ParseMode.HTML if html_for_caption else None,
+                    )
+            except AttributeError as exc:
+                if "is_premium" not in str(exc):
+                    raise
+                # Fallback for Pyrogram parser bug observed on media captions.
+                safe_caption = plain_caption or None
+                if self._is_image_file(path):
+                    await app.send_photo(chat_target, path, caption=safe_caption)
+                elif self._is_video_file(path):
+                    await app.send_video(chat_target, path, caption=safe_caption)
+                else:
+                    await app.send_document(chat_target, path, caption=safe_caption)
             return
 
         if html and len(html) > 1024:
@@ -2979,7 +3013,21 @@ class TelegramScraperGUI:
             else:
                 media.append(InputMediaDocument(path, caption=caption, parse_mode=ParseMode.HTML if caption else None))
 
-        await app.send_media_group(chat_target, media)
+        try:
+            await app.send_media_group(chat_target, media)
+        except AttributeError as exc:
+            if "is_premium" not in str(exc):
+                raise
+            media_plain = []
+            for idx, path in enumerate(attachments):
+                caption = plain_caption if idx == 0 and plain_caption else None
+                if self._is_image_file(path):
+                    media_plain.append(InputMediaPhoto(path, caption=caption))
+                elif self._is_video_file(path):
+                    media_plain.append(InputMediaVideo(path, caption=caption))
+                else:
+                    media_plain.append(InputMediaDocument(path, caption=caption))
+            await app.send_media_group(chat_target, media_plain)
 
     async def _send_broadcast_payload_input_user(self, app, user_id: int, access_hash: int, html_text: str, attachments: list[str]) -> None:
         # Raw fallback only supports text message in this implementation.
