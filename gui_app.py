@@ -112,16 +112,14 @@ class TelegramScraperGUI:
         self.broadcast_attachments: list[str] = []
         self.broadcast_log_lines: list[str] = []
 
-<<<<<<< HEAD
         # Branding logo (cached PhotoImage instances keyed by pixel size).
         self._logo_path = Path(__file__).resolve().parent / "assets" / "vibetool_logo.png"
         self._logo_source: Image.Image | None = None
         self._logo_cache: dict[int, ImageTk.PhotoImage] = {}
         self._apply_window_icon()
-=======
+
         self.grup_scrapper_results: list[dict] = []
         self._grup_scrapper_index_by_iid: dict[str, dict] = {}
->>>>>>> 46eb5c6b8326f03d27fd03e66c27de03c594943f
 
         self._build_ui()
         self._refresh_sessions_view()
