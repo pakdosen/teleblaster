@@ -72,10 +72,13 @@ Daftar grup yang sudah diikuti akun login akan tampil, lalu klik `Use Selected G
 Tab `Grup Scrapper` memungkinkan cari grup/channel publik berdasarkan keyword niche (mis. `Affiliate Indonesia`)
 dan langsung join dari aplikasi:
 
+- Pilih akun di dropdown `Akun` (default `Auto (rotasi semua akun)`, atau pilih nomor akun spesifik
+  agar Cari/Fetch/Join hanya pakai 1 akun tertentu — rotasi dimatikan). Klik `Refresh Akun` jika
+  ada akun baru yang baru saja di-login.
 - Isi keyword + encryption password.
 - Pilih filter tipe (`Semua`, `Group/Supergroup saja`, atau `Channel saja`) dan limit hasil (1–100).
-- Klik `Cari Grup` — pencarian memakai akun login (rotasi otomatis) lewat API Telegram `contacts.Search`,
-  hasilnya adalah grup/channel publik yang match keyword.
+- Klik `Cari Grup` — pencarian memakai akun terpilih (atau rotasi otomatis kalau `Auto`) lewat API
+  Telegram `contacts.Search`, hasilnya adalah grup/channel publik yang match keyword.
 - Klik `Fetch Member Counts` (opsional) untuk mengisi kolom Members dengan nilai aktual via `get_chat`.
 - Pilih beberapa baris lalu klik `Join Selected`, atau `Join All` untuk join seluruh hasil.
   Delay random antar join bisa disetel (default 5–15 detik) untuk hindari FloodWait.

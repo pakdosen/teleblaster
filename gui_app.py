@@ -695,16 +695,26 @@ class TelegramScraperGUI:
             style="Muted.TLabel",
         ).grid(row=0, column=1, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
-        ttk.Label(frm, text="Keyword niche").grid(row=1, column=0, sticky="w")
+        ttk.Label(frm, text="Akun").grid(row=1, column=0, sticky="w")
+        self.grup_scrapper_account = ttk.Combobox(
+            frm, width=36, state="readonly", values=[self.AUTO_ACCOUNT_LABEL]
+        )
+        self.grup_scrapper_account.set(self.AUTO_ACCOUNT_LABEL)
+        self.grup_scrapper_account.grid(row=1, column=1, sticky="w", padx=8, pady=2)
+        ttk.Button(
+            frm, text="Refresh Akun", command=self._refresh_account_pickers
+        ).grid(row=1, column=2, sticky="w", padx=6)
+
+        ttk.Label(frm, text="Keyword niche").grid(row=2, column=0, sticky="w")
         self.grup_scrapper_query = ttk.Entry(frm, width=48)
-        self.grup_scrapper_query.grid(row=1, column=1, columnspan=3, sticky="ew", padx=8, pady=2)
+        self.grup_scrapper_query.grid(row=2, column=1, columnspan=3, sticky="ew", padx=8, pady=2)
         self.grup_scrapper_query.bind("<Return>", lambda _e: self._run_grup_scrapper_search())
 
-        ttk.Label(frm, text="Encryption Password").grid(row=2, column=0, sticky="w")
+        ttk.Label(frm, text="Encryption Password").grid(row=3, column=0, sticky="w")
         self.grup_scrapper_password = ttk.Entry(frm, show="*", width=32)
-        self.grup_scrapper_password.grid(row=2, column=1, sticky="w", padx=8, pady=2)
+        self.grup_scrapper_password.grid(row=3, column=1, sticky="w", padx=8, pady=2)
 
-        ttk.Label(frm, text="Tipe").grid(row=3, column=0, sticky="w")
+        ttk.Label(frm, text="Tipe").grid(row=4, column=0, sticky="w")
         self.grup_scrapper_type = ttk.Combobox(
             frm,
             width=28,
@@ -712,16 +722,16 @@ class TelegramScraperGUI:
             values=["Semua (Group + Channel)", "Group/Supergroup saja", "Channel saja"],
         )
         self.grup_scrapper_type.set("Semua (Group + Channel)")
-        self.grup_scrapper_type.grid(row=3, column=1, sticky="w", padx=8, pady=2)
+        self.grup_scrapper_type.grid(row=4, column=1, sticky="w", padx=8, pady=2)
 
-        ttk.Label(frm, text="Limit hasil").grid(row=3, column=2, sticky="e", padx=(8, 4))
+        ttk.Label(frm, text="Limit hasil").grid(row=4, column=2, sticky="e", padx=(8, 4))
         self.grup_scrapper_limit = ttk.Entry(frm, width=8)
         self.grup_scrapper_limit.insert(0, "50")
-        self.grup_scrapper_limit.grid(row=3, column=3, sticky="w")
+        self.grup_scrapper_limit.grid(row=4, column=3, sticky="w")
 
-        ttk.Label(frm, text="Delay join random (sec)").grid(row=4, column=0, sticky="w")
+        ttk.Label(frm, text="Delay join random (sec)").grid(row=5, column=0, sticky="w")
         delay_wrap = ttk.Frame(frm)
-        delay_wrap.grid(row=4, column=1, sticky="w", padx=8, pady=2)
+        delay_wrap.grid(row=5, column=1, sticky="w", padx=8, pady=2)
         self.grup_scrapper_delay_min = ttk.Entry(delay_wrap, width=5)
         self.grup_scrapper_delay_min.insert(0, "5")
         self.grup_scrapper_delay_min.pack(side=tk.LEFT)
@@ -735,10 +745,10 @@ class TelegramScraperGUI:
             frm,
             text="Skip grup/channel berlabel scam/fake saat Join",
             variable=self.grup_scrapper_skip_scam,
-        ).grid(row=4, column=2, columnspan=2, sticky="w", padx=4)
+        ).grid(row=5, column=2, columnspan=2, sticky="w", padx=4)
 
         actions = ttk.Frame(frm)
-        actions.grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 4))
+        actions.grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 4))
         ttk.Button(
             actions, text="Cari Grup", style="Accent.TButton", command=self._run_grup_scrapper_search
         ).pack(side=tk.LEFT)
@@ -766,8 +776,8 @@ class TelegramScraperGUI:
         )
 
         tree_wrap = ttk.Frame(frm)
-        tree_wrap.grid(row=6, column=0, columnspan=4, sticky="nsew", pady=(6, 4))
-        frm.grid_rowconfigure(6, weight=1)
+        tree_wrap.grid(row=7, column=0, columnspan=4, sticky="nsew", pady=(6, 4))
+        frm.grid_rowconfigure(7, weight=1)
 
         columns = ("title", "type", "username", "members", "status")
         self.grup_scrapper_tree = ttk.Treeview(
@@ -799,18 +809,19 @@ class TelegramScraperGUI:
             frm,
             textvariable=self.grup_scrapper_stats_var,
             style="Muted.TLabel",
-        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         ttk.Label(
             frm,
             text=(
                 "Tip: Telegram membatasi hasil global search ~10–50 per query, jadi pakai keyword spesifik. "
+                "Pilih akun spesifik di dropdown jika ingin Join hanya pakai 1 akun (tidak dirotasi). "
                 "Double-click baris untuk salin link ke clipboard."
             ),
             style="Muted.TLabel",
             wraplength=900,
             justify=tk.LEFT,
-        ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ).grid(row=9, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
     def _build_broadcast_tab(self) -> None:
         frm = self.tab_broadcast
@@ -2255,12 +2266,15 @@ class TelegramScraperGUI:
 
         type_filter = self.grup_scrapper_type.get()
         skip_scam = bool(self.grup_scrapper_skip_scam.get()) if hasattr(self, "grup_scrapper_skip_scam") else True
+        account_phone = self._parse_account_choice(self.grup_scrapper_account.get()) if hasattr(self, "grup_scrapper_account") else None
+        if account_phone:
+            self._log(f"Grup Scrapper search menggunakan akun terpilih: {mask_phone(account_phone)}")
 
         async def _job():
             async def _op(app, _phone: str):
                 return await app.invoke(raw.functions.contacts.Search(q=query, limit=limit))
 
-            result, used_phone = await execute_with_rotation(self.manager, password, _op)
+            result, used_phone = await self._execute_on_account(password, account_phone, _op)
 
             chats = list(getattr(result, "chats", []) or [])
             rows: list[dict] = []
@@ -2348,6 +2362,8 @@ class TelegramScraperGUI:
             messagebox.showinfo("Stats", "Semua item sudah punya member count")
             return
 
+        account_phone = self._parse_account_choice(self.grup_scrapper_account.get()) if hasattr(self, "grup_scrapper_account") else None
+
         async def _job():
             async def _op(app, _phone: str):
                 for it in pending:
@@ -2366,7 +2382,7 @@ class TelegramScraperGUI:
                     await asyncio.sleep(0.4)
                 return True
 
-            await execute_with_rotation(self.manager, password, _op)
+            await self._execute_on_account(password, account_phone, _op)
             self._post(lambda: self._log("Fetch member counts selesai"))
 
         self._run_async_job(_job())
@@ -2413,11 +2429,22 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Delay tidak valid. min >= 0 dan min <= max")
             return
 
+        account_phone = self._parse_account_choice(self.grup_scrapper_account.get()) if hasattr(self, "grup_scrapper_account") else None
+        account_label = mask_phone(account_phone) if account_phone else "Auto (rotasi semua akun)"
+
         if not messagebox.askyesno(
             "Konfirmasi Join",
-            f"Akan join {len(targets)} grup/channel dengan delay random {delay_min:.1f}-{delay_max:.1f} detik. Lanjutkan?",
+            (
+                f"Akan join {len(targets)} grup/channel dengan delay random "
+                f"{delay_min:.1f}-{delay_max:.1f} detik menggunakan akun: {account_label}.\n\nLanjutkan?"
+            ),
         ):
             return
+
+        if account_phone:
+            self._log(
+                f"[Grup Scrapper] Join akan menggunakan akun terpilih: {mask_phone(account_phone)} (rotasi dimatikan)"
+            )
 
         async def _job():
             joined_count = 0
@@ -2446,7 +2473,7 @@ class TelegramScraperGUI:
                             raise
                         return True
 
-                    _, used_phone = await execute_with_rotation(self.manager, password, _op)
+                    _, used_phone = await self._execute_on_account(password, account_phone, _op)
                     joined_count += 1
                     item["joined"] = True
                     item["status"] = "Joined"
@@ -3128,7 +3155,12 @@ class TelegramScraperGUI:
 
     def _refresh_account_pickers(self) -> None:
         choices = self._account_choices()
-        for combobox_name in ("scrape_account", "add_account", "broadcast_account"):
+        for combobox_name in (
+            "scrape_account",
+            "add_account",
+            "broadcast_account",
+            "grup_scrapper_account",
+        ):
             cb = getattr(self, combobox_name, None)
             if cb is None:
                 continue
