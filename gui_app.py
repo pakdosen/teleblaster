@@ -1519,24 +1519,53 @@ class TelegramScraperGUI:
                 elif mode == "Hidden Members":
                     await self._scrape_hidden(password, target)
                 else:
-                    # "Visible + Hidden" — jalankan berurutan agar member dari kedua
-                    # source menumpuk di file yang sama (dedup by ID otomatis).
+                    # "Visible + Hidden" — jalankan berurutan; per-grup CSV
+                    # otomatis tergabung lewat append_members_dedup. Popup
+                    # per-fase di-suppress agar hanya satu ringkasan akhir.
                     self._post(
                         lambda: self._set_scrape_progress(
                             "Phase 1/2: Visible Members...", 0, None, indeterminate=True
                         )
                     )
-                    await self._scrape_visible(password, target)
+                    visible = await self._scrape_visible(password, target, show_popup=False)
                     self._post(
                         lambda: self._set_scrape_progress(
                             "Phase 2/2: Hidden Members...", 0, None, indeterminate=True
                         )
                     )
-                    await self._scrape_hidden(password, target)
+                    hidden = await self._scrape_hidden(password, target, show_popup=False)
+                    self._post(
+                        lambda v=visible, h=hidden: self._show_combined_scrape_summary(v, h)
+                    )
             finally:
                 self._post(lambda: self._set_scrape_progress("Selesai.", 0, None, indeterminate=False))
 
         self._run_async_job(_job())
+
+    def _show_combined_scrape_summary(self, visible: dict | None, hidden: dict | None) -> None:
+        lines = ["Visible + Hidden scrape selesai."]
+        if visible:
+            lines.append(
+                f"  Visible via {visible.get('phone', '?')}: "
+                f"before={visible.get('before', '?')}, after={visible.get('after', '?')}"
+            )
+        if hidden:
+            lines.append(
+                f"  Hidden via {hidden.get('phone', '?')}: "
+                f"before={hidden.get('before', '?')}, after={hidden.get('after', '?')}"
+            )
+        # Per-grup path harus sama untuk kedua fase (file digabung otomatis via
+        # append_members_dedup). Ambil unik untuk jaga-jaga kalau title berubah.
+        paths: list[str] = []
+        for stage in (visible, hidden):
+            p = (stage or {}).get("per_group_path")
+            if p and p not in paths:
+                paths.append(p)
+        for p in paths:
+            lines.append(f"  Per-grup: {p}")
+        summary = "\n".join(lines)
+        self._log(summary)
+        messagebox.showinfo("Scrape Result", summary)
 
     def _set_scrape_progress(
         self,
@@ -2100,7 +2129,7 @@ class TelegramScraperGUI:
             )
             return None
 
-    async def _scrape_visible(self, password: str, target: str) -> None:
+    async def _scrape_visible(self, password: str, target: str, *, show_popup: bool = True) -> dict | None:
         rows: list[dict] = []
         chat_info: dict = {"title": "", "id": "", "members_count": None}
 
@@ -2165,10 +2194,18 @@ class TelegramScraperGUI:
         if per_group_path:
             summary += f"\nPer-grup: {per_group_path}"
         self._post(lambda s=summary: self._log(s))
-        self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
+        if show_popup:
+            self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
         self._post(self._reload_broadcast_members)
+        return {
+            "phase": "visible",
+            "phone": phone,
+            "before": before,
+            "after": after,
+            "per_group_path": per_group_path,
+        }
 
-    async def _scrape_hidden(self, password: str, target: str) -> None:
+    async def _scrape_hidden(self, password: str, target: str, *, show_popup: bool = True) -> dict | None:
         checkpoint = load_checkpoint(self.config.checkpoint_file)
         start_from = 0
         users: dict[str, dict] = {}
@@ -2261,8 +2298,16 @@ class TelegramScraperGUI:
         if per_group_path:
             summary += f"\nPer-grup: {per_group_path}"
         self._post(lambda s=summary: self._log(s))
-        self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
+        if show_popup:
+            self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
         self._post(self._reload_broadcast_members)
+        return {
+            "phase": "hidden",
+            "phone": phone,
+            "before": before,
+            "after": after,
+            "per_group_path": per_group_path,
+        }
 
     def _run_adder(self) -> None:
         password = self.add_password.get().strip()
