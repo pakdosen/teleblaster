@@ -9,16 +9,17 @@ from account_manager import AccountManager
 from configs import Config
 from funcs.helpers import execute_with_rotation, load_checkpoint, resolve_target_chat, save_checkpoint
 from funcs.ui import error, info, success, warn
-from utils import append_members_dedup, normalize_menu_choice, per_group_members_path
+from utils import append_members_dedup, infer_gender, normalize_menu_choice, per_group_members_path
 
 
 async def handle_scrape(config: Config, manager: AccountManager) -> None:
     info("01 - Scrape Non-Hidden Members")
     info("02 - Scrape Hidden Members (from messages)")
+    info("03 - Scrape Visible + Hidden (jalankan keduanya)")
     info("00 - Back")
     choice = normalize_menu_choice(Prompt.ask("Choose", default="00"))
 
-    if choice not in {"01", "02"}:
+    if choice not in {"01", "02", "03"}:
         return
 
     password = getpass.getpass("Encryption password: ")
@@ -26,7 +27,11 @@ async def handle_scrape(config: Config, manager: AccountManager) -> None:
 
     if choice == "01":
         await _scrape_visible(config, manager, password, target)
+    elif choice == "02":
+        await _scrape_hidden(config, manager, password, target)
     else:
+        info("Mode Visible + Hidden — menjalankan keduanya berurutan...")
+        await _scrape_visible(config, manager, password, target)
         await _scrape_hidden(config, manager, password, target)
 
 
@@ -125,11 +130,13 @@ def _write_per_group(config: Config, chat_info: dict, rows: list[dict]) -> str |
 
 
 def _row_from_user(user, group_name: str, group_id: str) -> dict:
+    full_name = (user.first_name or "") + (f" {user.last_name}" if user.last_name else "")
     return {
-        "Name": (user.first_name or "") + (f" {user.last_name}" if user.last_name else ""),
+        "Name": full_name,
         "ID": str(user.id),
         "Username": user.username or "",
         "Access Hash": str(getattr(user, "access_hash", "")),
+        "Gender": infer_gender(full_name),
         "Group Name": group_name,
         "Group ID": group_id,
     }

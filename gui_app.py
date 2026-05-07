@@ -25,6 +25,7 @@ from funcs.qr_auth import show_qr_and_wait_login
 from utils import (
     append_members_dedup,
     ensure_paths,
+    infer_gender,
     mask_phone,
     normalize_chat_target,
     per_group_members_path,
@@ -628,7 +629,12 @@ class TelegramScraperGUI:
         )
 
         ttk.Label(frm, text="Mode").grid(row=2, column=0, sticky="w")
-        self.scrape_mode = ttk.Combobox(frm, width=28, state="readonly", values=["Visible Members", "Hidden Members"])
+        self.scrape_mode = ttk.Combobox(
+            frm,
+            width=28,
+            state="readonly",
+            values=["Visible Members", "Hidden Members", "Visible + Hidden"],
+        )
         self.scrape_mode.set("Visible Members")
         self.scrape_mode.grid(row=2, column=1, sticky="w", padx=8)
 
@@ -645,6 +651,12 @@ class TelegramScraperGUI:
         ttk.Button(frm, text="Load My Joined Groups", command=self._load_joined_groups).grid(
             row=5, column=2, sticky="w", padx=6, pady=8
         )
+
+        # Progress bar + label realtime saat scrape berjalan.
+        self.scrape_progress_label = ttk.Label(frm, text="Idle.", style="Muted.TLabel")
+        self.scrape_progress_label.grid(row=6, column=0, columnspan=3, sticky="w", padx=0, pady=(2, 0))
+        self.scrape_progress = ttk.Progressbar(frm, mode="determinate", length=400, maximum=100)
+        self.scrape_progress.grid(row=6, column=1, columnspan=2, sticky="ew", padx=8, pady=(2, 6))
 
         self.group_listbox = tk.Listbox(frm, height=9, width=78)
         self.group_listbox.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 0))
@@ -1497,13 +1509,78 @@ class TelegramScraperGUI:
         else:
             self.scrape_strict_account = False
 
+        # Reset progress UI segera sebelum job mulai.
+        self._post(lambda: self._set_scrape_progress("Mulai...", 0, None, indeterminate=True))
+
         async def _job():
-            if mode == "Visible Members":
-                await self._scrape_visible(password, target)
-            else:
-                await self._scrape_hidden(password, target)
+            try:
+                if mode == "Visible Members":
+                    await self._scrape_visible(password, target)
+                elif mode == "Hidden Members":
+                    await self._scrape_hidden(password, target)
+                else:
+                    # "Visible + Hidden" — jalankan berurutan agar member dari kedua
+                    # source menumpuk di file yang sama (dedup by ID otomatis).
+                    self._post(
+                        lambda: self._set_scrape_progress(
+                            "Phase 1/2: Visible Members...", 0, None, indeterminate=True
+                        )
+                    )
+                    await self._scrape_visible(password, target)
+                    self._post(
+                        lambda: self._set_scrape_progress(
+                            "Phase 2/2: Hidden Members...", 0, None, indeterminate=True
+                        )
+                    )
+                    await self._scrape_hidden(password, target)
+            finally:
+                self._post(lambda: self._set_scrape_progress("Selesai.", 0, None, indeterminate=False))
 
         self._run_async_job(_job())
+
+    def _set_scrape_progress(
+        self,
+        text: str,
+        current: int,
+        total: int | None,
+        *,
+        indeterminate: bool = False,
+    ) -> None:
+        """Update progress bar + label di tab Members Scraper.
+
+        - `indeterminate=True` → animasi marquee (saat total tidak diketahui, mis.
+          fase awal Hidden scrape sebelum tahu chat.members_count).
+        - `total=None` & `indeterminate=False` → bar 0%, hanya tampilkan angka.
+        - `total>0` → bar 0..100% berdasarkan current/total.
+        """
+        if not hasattr(self, "scrape_progress") or not hasattr(self, "scrape_progress_label"):
+            return
+
+        if indeterminate:
+            try:
+                self.scrape_progress.configure(mode="indeterminate", maximum=100)
+                self.scrape_progress.start(80)
+            except Exception:
+                pass
+            self.scrape_progress_label.configure(text=text)
+            return
+
+        # Stop indeterminate animation kalau aktif.
+        try:
+            self.scrape_progress.stop()
+        except Exception:
+            pass
+
+        if total and total > 0:
+            pct = min(100, int(current * 100 / total))
+            self.scrape_progress.configure(mode="determinate", maximum=100, value=pct)
+            self.scrape_progress_label.configure(text=f"{text} ({current}/{total} = {pct}%)")
+        else:
+            self.scrape_progress.configure(mode="determinate", maximum=100, value=0)
+            if current:
+                self.scrape_progress_label.configure(text=f"{text} ({current})")
+            else:
+                self.scrape_progress_label.configure(text=text)
 
     def _load_joined_groups(self) -> None:
         password = self.scrape_password.get().strip()
@@ -2025,27 +2102,60 @@ class TelegramScraperGUI:
 
     async def _scrape_visible(self, password: str, target: str) -> None:
         rows: list[dict] = []
-        chat_info: dict = {"title": "", "id": ""}
+        chat_info: dict = {"title": "", "id": "", "members_count": None}
 
         async def _op(app, _phone: str):
             chat = await resolve_target_chat(app, target)
             chat_info["title"] = chat.title or ""
             chat_info["id"] = str(chat.id)
+            total_members = getattr(chat, "members_count", None)
+            chat_info["members_count"] = total_members
+
+            self._post(
+                lambda t=total_members: self._set_scrape_progress(
+                    "Visible scrape...",
+                    0,
+                    t if isinstance(t, int) and t > 0 else None,
+                    indeterminate=not (isinstance(t, int) and t > 0),
+                )
+            )
+
+            count = 0
             async for member in app.get_chat_members(chat.id, filter=ChatMembersFilter.SEARCH):
                 user = member.user
                 if not user or user.is_bot:
                     continue
                 access_hash = await self._resolve_access_hash(app, int(user.id))
+                full_name = (user.first_name or "") + (f" {user.last_name}" if user.last_name else "")
                 rows.append(
                     {
-                        "Name": (user.first_name or "") + (f" {user.last_name}" if user.last_name else ""),
+                        "Name": full_name,
                         "ID": str(user.id),
                         "Username": user.username or "",
                         "Access Hash": str(access_hash or ""),
+                        "Gender": infer_gender(full_name),
                         "Group Name": chat.title or "",
                         "Group ID": str(chat.id),
                     }
                 )
+                count += 1
+                # Update tiap 10 member supaya UI tidak overload event loop.
+                if count % 10 == 0:
+                    self._post(
+                        lambda c=count, t=total_members: self._set_scrape_progress(
+                            "Visible scrape",
+                            c,
+                            t if isinstance(t, int) and t > 0 else None,
+                        )
+                    )
+            # Final update.
+            self._post(
+                lambda c=count, t=total_members: self._set_scrape_progress(
+                    "Visible scrape",
+                    c,
+                    t if isinstance(t, int) and t > 0 else None,
+                )
+            )
             return True
 
         _, phone = await self._execute_with_scrape_hint(password, target, _op)
@@ -2062,7 +2172,7 @@ class TelegramScraperGUI:
         checkpoint = load_checkpoint(self.config.checkpoint_file)
         start_from = 0
         users: dict[str, dict] = {}
-        chat_info: dict = {"title": "", "id": ""}
+        chat_info: dict = {"title": "", "id": "", "members_count": None}
         if checkpoint.get("target") == target and checkpoint.get("last_message_id"):
             start_from = int(checkpoint.get("last_message_id", 0))
             users = checkpoint.get("users", {})
@@ -2071,35 +2181,40 @@ class TelegramScraperGUI:
             chat = await resolve_target_chat(app, target)
             chat_info["title"] = chat.title or ""
             chat_info["id"] = str(chat.id)
+            chat_info["members_count"] = getattr(chat, "members_count", None)
+
+            # Hidden scrape iterasi message history — kita tidak tahu total messages,
+            # jadi pakai indeterminate animation + count unique users yang ditemukan.
+            self._post(
+                lambda: self._set_scrape_progress(
+                    "Hidden scrape (membaca history)...", 0, None, indeterminate=True
+                )
+            )
             counter = 0
+
+            async def _row_for_user(u) -> dict:
+                access_hash = await self._resolve_access_hash(app, int(u.id))
+                full_name = (u.first_name or "") + (f" {u.last_name}" if u.last_name else "")
+                return {
+                    "Name": full_name,
+                    "ID": str(u.id),
+                    "Username": u.username or "",
+                    "Access Hash": str(access_hash or ""),
+                    "Gender": infer_gender(full_name),
+                    "Group Name": chat.title or "",
+                    "Group ID": str(chat.id),
+                }
+
             async for msg in app.get_chat_history(chat.id):
                 if start_from and msg.id >= start_from:
                     continue
 
                 extracted: dict[str, dict] = {}
                 if msg.from_user and not msg.from_user.is_bot:
-                    u = msg.from_user
-                    access_hash = await self._resolve_access_hash(app, int(u.id))
-                    extracted[str(u.id)] = {
-                        "Name": (u.first_name or "") + (f" {u.last_name}" if u.last_name else ""),
-                        "ID": str(u.id),
-                        "Username": u.username or "",
-                        "Access Hash": str(access_hash or ""),
-                        "Group Name": chat.title or "",
-                        "Group ID": str(chat.id),
-                    }
+                    extracted[str(msg.from_user.id)] = await _row_for_user(msg.from_user)
 
                 if getattr(msg, "forward_from", None) and not msg.forward_from.is_bot:
-                    u = msg.forward_from
-                    access_hash = await self._resolve_access_hash(app, int(u.id))
-                    extracted[str(u.id)] = {
-                        "Name": (u.first_name or "") + (f" {u.last_name}" if u.last_name else ""),
-                        "ID": str(u.id),
-                        "Username": u.username or "",
-                        "Access Hash": str(access_hash or ""),
-                        "Group Name": chat.title or "",
-                        "Group ID": str(chat.id),
-                    }
+                    extracted[str(msg.forward_from.id)] = await _row_for_user(msg.forward_from)
 
                 entities = msg.entities or []
                 text = msg.text or msg.caption or ""
@@ -2107,36 +2222,28 @@ class TelegramScraperGUI:
                     if ent.type == MessageEntityType.TEXT_MENTION and getattr(ent, "user", None):
                         u = ent.user
                         if not u.is_bot:
-                            access_hash = await self._resolve_access_hash(app, int(u.id))
-                            extracted[str(u.id)] = {
-                                "Name": (u.first_name or "") + (f" {u.last_name}" if u.last_name else ""),
-                                "ID": str(u.id),
-                                "Username": u.username or "",
-                                "Access Hash": str(access_hash or ""),
-                                "Group Name": chat.title or "",
-                                "Group ID": str(chat.id),
-                            }
+                            extracted[str(u.id)] = await _row_for_user(u)
                     elif ent.type == MessageEntityType.MENTION:
                         mention = text[ent.offset : ent.offset + ent.length].strip().lstrip("@")
                         if mention:
                             try:
                                 u = await app.get_users(mention)
                                 if u and not u.is_bot:
-                                    access_hash = await self._resolve_access_hash(app, int(u.id))
-                                    extracted[str(u.id)] = {
-                                        "Name": (u.first_name or "") + (f" {u.last_name}" if u.last_name else ""),
-                                        "ID": str(u.id),
-                                        "Username": u.username or "",
-                                        "Access Hash": str(access_hash or ""),
-                                        "Group Name": chat.title or "",
-                                        "Group ID": str(chat.id),
-                                    }
+                                    extracted[str(u.id)] = await _row_for_user(u)
                             except Exception:
                                 pass
 
                 if extracted:
+                    new_users = {uid: row for uid, row in extracted.items() if uid not in users}
                     users.update(extracted)
                     counter += len(extracted)
+                    if new_users:
+                        # Update progress hanya saat ada user UNIK baru, tidak per-message.
+                        self._post(
+                            lambda c=len(users): self._set_scrape_progress(
+                                "Hidden scrape", c, None
+                            )
+                        )
                     if counter % 50 == 0:
                         save_checkpoint(
                             self.config.checkpoint_file,
