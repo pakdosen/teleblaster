@@ -9,6 +9,51 @@ from urllib.parse import urlparse
 
 MEMBER_HEADERS = ["Name", "ID", "Username", "Access Hash", "Group Name", "Group ID"]
 
+SCRAPE_RESULTS_DIR = "Hasil Scrape Member"
+
+_FS_INVALID_CHARS = set('<>:"/\\|?*')
+_WINDOWS_RESERVED_NAMES = (
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def sanitize_filename(name: str, max_len: int = 100, fallback: str = "untitled") -> str:
+    """Return a filesystem-safe version of `name` suitable for cross-platform filenames.
+
+    Replaces characters illegal on Windows (`<>:"/\\|?*`) and control chars (ord < 32)
+    with underscores, trims surrounding whitespace and trailing dots, avoids reserved
+    Windows device names (CON, PRN, COM1, etc.), and truncates to `max_len` chars.
+    Returns `fallback` if the result would otherwise be empty.
+    """
+    cleaned = "".join(
+        "_" if (c in _FS_INVALID_CHARS or ord(c) < 32) else c
+        for c in (name or "")
+    ).strip().rstrip(". ").strip()
+
+    if cleaned.upper().split(".", 1)[0] in _WINDOWS_RESERVED_NAMES:
+        cleaned = "_" + cleaned
+
+    if not cleaned:
+        return fallback
+
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip(". ").strip() or fallback
+
+    return cleaned
+
+
+def per_group_members_path(members_csv_path: str, group_title: str) -> Path:
+    """Build the path for a per-group scrape CSV next to `members_csv_path`.
+
+    Result: `<members_csv parent>/Hasil Scrape Member/<sanitized title>.csv`.
+    """
+    csv_path = Path(members_csv_path)
+    base_dir = csv_path.parent if str(csv_path.parent) not in ("", ".") else Path(".")
+    safe = sanitize_filename(group_title)
+    return base_dir / SCRAPE_RESULTS_DIR / f"{safe}.csv"
+
 
 def ensure_paths(*paths: str) -> None:
     for path in paths:

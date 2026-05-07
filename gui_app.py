@@ -22,7 +22,16 @@ from account_manager import AccountManager
 from configs import Config
 from funcs.helpers import execute_with_rotation, load_checkpoint, resolve_target_chat, save_checkpoint, save_session_string
 from funcs.qr_auth import show_qr_and_wait_login
-from utils import append_members_dedup, ensure_paths, mask_phone, normalize_chat_target, random_delay, read_members_csv, write_members_csv_atomic
+from utils import (
+    append_members_dedup,
+    ensure_paths,
+    mask_phone,
+    normalize_chat_target,
+    per_group_members_path,
+    random_delay,
+    read_members_csv,
+    write_members_csv_atomic,
+)
 
 
 class TelegramScraperGUI:
@@ -1991,11 +2000,37 @@ class TelegramScraperGUI:
         self._refresh_picked_listbox()
         self._log_broadcast("Recipients: dikosongkan")
 
+    def _write_per_group_csv(self, chat_info: dict, rows: list[dict]) -> str | None:
+        """Tulis hasil scrape ke `Hasil Scrape Member/<title>.csv` (per-grup) dengan dedup.
+
+        Returns the path string when written, atau None bila tidak ada rows / title kosong.
+        """
+        if not rows:
+            return None
+        title = (chat_info or {}).get("title") or ""
+        if not title.strip():
+            # Fallback ke Group ID kalau title kosong, agar file tetap punya nama deskriptif.
+            title = f"group_{(chat_info or {}).get('id') or 'untitled'}"
+        try:
+            path = per_group_members_path(self.config.members_csv, title)
+            append_members_dedup(str(path), rows)
+            return str(path)
+        except Exception as exc:
+            self._post(
+                lambda e=exc: self._log(
+                    f"Gagal tulis per-grup CSV: {type(e).__name__}: {e}"
+                )
+            )
+            return None
+
     async def _scrape_visible(self, password: str, target: str) -> None:
         rows: list[dict] = []
+        chat_info: dict = {"title": "", "id": ""}
 
         async def _op(app, _phone: str):
             chat = await resolve_target_chat(app, target)
+            chat_info["title"] = chat.title or ""
+            chat_info["id"] = str(chat.id)
             async for member in app.get_chat_members(chat.id, filter=ChatMembersFilter.SEARCH):
                 user = member.user
                 if not user or user.is_bot:
@@ -2015,7 +2050,10 @@ class TelegramScraperGUI:
 
         _, phone = await self._execute_with_scrape_hint(password, target, _op)
         before, after = append_members_dedup(self.config.members_csv, rows)
+        per_group_path = self._write_per_group_csv(chat_info, rows)
         summary = f"Visible scrape via {phone} selesai. before={before}, after={after}"
+        if per_group_path:
+            summary += f"\nPer-grup: {per_group_path}"
         self._post(lambda s=summary: self._log(s))
         self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
         self._post(self._reload_broadcast_members)
@@ -2024,12 +2062,15 @@ class TelegramScraperGUI:
         checkpoint = load_checkpoint(self.config.checkpoint_file)
         start_from = 0
         users: dict[str, dict] = {}
+        chat_info: dict = {"title": "", "id": ""}
         if checkpoint.get("target") == target and checkpoint.get("last_message_id"):
             start_from = int(checkpoint.get("last_message_id", 0))
             users = checkpoint.get("users", {})
 
         async def _op(app, _phone: str):
             chat = await resolve_target_chat(app, target)
+            chat_info["title"] = chat.title or ""
+            chat_info["id"] = str(chat.id)
             counter = 0
             async for msg in app.get_chat_history(chat.id):
                 if start_from and msg.id >= start_from:
@@ -2105,9 +2146,13 @@ class TelegramScraperGUI:
             return True
 
         _, phone = await self._execute_with_scrape_hint(password, target, _op)
-        before, after = append_members_dedup(self.config.members_csv, list(users.values()))
+        rows_list = list(users.values())
+        before, after = append_members_dedup(self.config.members_csv, rows_list)
+        per_group_path = self._write_per_group_csv(chat_info, rows_list)
         save_checkpoint(self.config.checkpoint_file, {})
         summary = f"Hidden scrape via {phone} selesai. before={before}, after={after}"
+        if per_group_path:
+            summary += f"\nPer-grup: {per_group_path}"
         self._post(lambda s=summary: self._log(s))
         self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
         self._post(self._reload_broadcast_members)

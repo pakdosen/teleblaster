@@ -67,6 +67,11 @@ GUI menyediakan tab untuk Login, Scraper, Grup Scrapper, Adder, Broadcast, dan S
 Di tab `Members Scraper`, gunakan tombol `Load My Joined Groups` setelah mengisi encryption password.
 Daftar grup yang sudah diikuti akun login akan tampil, lalu klik `Use Selected Group` agar target scrape terisi otomatis.
 
+Hasil scrape disimpan di **dua** lokasi:
+- `members.csv` (gabungan semua scrape, dedup global) — dipakai tab `Broadcast`.
+- `Hasil Scrape Member/<Nama Grup>.csv` (per-grup, dedup per file) — siap dipakai/di-share terpisah.
+Nama file otomatis dibersihkan dari karakter ilegal Windows.
+
 ### Grup Scrapper
 
 Tab `Grup Scrapper` memungkinkan cari grup/channel publik berdasarkan keyword niche (mis. `Affiliate Indonesia`)

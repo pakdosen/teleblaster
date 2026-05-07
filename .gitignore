@@ -5,6 +5,7 @@ logs/*.log
 logs/*.session
 sessions/*.json
 members.csv
+Hasil Scrape Member/
 scrape_checkpoint.json
 account_cooldowns.json
 qr_login.png
