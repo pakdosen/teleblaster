@@ -653,24 +653,31 @@ class TelegramScraperGUI:
         )
 
         # Progress bar + label realtime saat scrape berjalan.
+        # Label dan bar dipisah ke baris berbeda agar tidak saling menumpuk.
         self.scrape_progress_label = ttk.Label(frm, text="Idle.", style="Muted.TLabel")
-        self.scrape_progress_label.grid(row=6, column=0, columnspan=3, sticky="w", padx=0, pady=(2, 0))
-        self.scrape_progress = ttk.Progressbar(frm, mode="determinate", length=400, maximum=100)
-        self.scrape_progress.grid(row=6, column=1, columnspan=2, sticky="ew", padx=8, pady=(2, 6))
+        self.scrape_progress_label.grid(
+            row=6, column=0, columnspan=3, sticky="w", padx=0, pady=(6, 0)
+        )
+        self.scrape_progress = ttk.Progressbar(
+            frm, mode="determinate", length=400, maximum=100
+        )
+        self.scrape_progress.grid(
+            row=7, column=0, columnspan=3, sticky="ew", padx=0, pady=(2, 8)
+        )
 
         self.group_listbox = tk.Listbox(frm, height=9, width=78)
-        self.group_listbox.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self.group_listbox.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(6, 0))
         self._style_listbox_widget(self.group_listbox)
 
         ttk.Button(frm, text="Use Selected Group", command=self._use_selected_group).grid(
-            row=8, column=0, sticky="w", pady=6
+            row=9, column=0, sticky="w", pady=6
         )
 
         ttk.Label(
             frm,
             text="Hasil disimpan ke members.csv",
             foreground="#666",
-        ).grid(row=9, column=0, columnspan=3, sticky="w")
+        ).grid(row=10, column=0, columnspan=3, sticky="w")
 
     def _build_add_tab(self) -> None:
         frm = self.tab_add
@@ -1638,10 +1645,15 @@ class TelegramScraperGUI:
     ) -> None:
         """Update progress bar + label di tab Members Scraper.
 
-        - `indeterminate=True` → animasi marquee (saat total tidak diketahui, mis.
-          fase awal Hidden scrape sebelum tahu chat.members_count).
-        - `total=None` & `indeterminate=False` → bar 0%, hanya tampilkan angka.
-        - `total>0` → bar 0..100% berdasarkan current/total.
+        - `indeterminate=True` → animasi marquee (saat total tidak diketahui,
+          mis. Hidden scrape yang iterasi history). Label tetap tampilkan
+          jumlah member yang sudah ditemukan kalau `current > 0`.
+        - `total>0`, `indeterminate=False` → bar 0..100% berdasarkan
+          current/total. Label tampilkan angka + persen.
+        - `total=None`, `indeterminate=False`, `current>0` → label tampilkan
+          count saja (untuk fase final/transition).
+        - `current=0`, `total=None`, `indeterminate=False` → bar reset 0%,
+          label tampilkan teks status saja.
         """
         if not hasattr(self, "scrape_progress") or not hasattr(self, "scrape_progress_label"):
             return
@@ -1652,7 +1664,12 @@ class TelegramScraperGUI:
                 self.scrape_progress.start(80)
             except Exception:
                 pass
-            self.scrape_progress_label.configure(text=text)
+            if current and current > 0:
+                self.scrape_progress_label.configure(
+                    text=f"{text} — {current} member ditemukan"
+                )
+            else:
+                self.scrape_progress_label.configure(text=text)
             return
 
         # Stop indeterminate animation kalau aktif.
@@ -1664,11 +1681,13 @@ class TelegramScraperGUI:
         if total and total > 0:
             pct = min(100, int(current * 100 / total))
             self.scrape_progress.configure(mode="determinate", maximum=100, value=pct)
-            self.scrape_progress_label.configure(text=f"{text} ({current}/{total} = {pct}%)")
+            self.scrape_progress_label.configure(
+                text=f"{text}: {current} / {total} ({pct}%)"
+            )
         else:
             self.scrape_progress.configure(mode="determinate", maximum=100, value=0)
             if current:
-                self.scrape_progress_label.configure(text=f"{text} ({current})")
+                self.scrape_progress_label.configure(text=f"{text}: {current} member")
             else:
                 self.scrape_progress_label.configure(text=text)
 
@@ -2355,9 +2374,14 @@ class TelegramScraperGUI:
                     counter += len(extracted)
                     if new_users:
                         # Update progress hanya saat ada user UNIK baru, tidak per-message.
+                        # Pakai indeterminate=True agar marquee tetap jalan + label
+                        # update angka unique yang ditemukan secara realtime.
                         self._post(
                             lambda c=len(users): self._set_scrape_progress(
-                                "Hidden scrape", c, None
+                                "Hidden scrape (membaca history)",
+                                c,
+                                None,
+                                indeterminate=True,
                             )
                         )
                     if counter % 50 == 0:
