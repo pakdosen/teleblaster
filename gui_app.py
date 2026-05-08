@@ -990,6 +990,11 @@ class TelegramScraperGUI:
             style="Danger.TButton",
             command=self._clear_scraped_members,
         ).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(
+            action_row,
+            text="Import CSV",
+            command=self._import_broadcast_csv,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
 
         ttk.Label(frm, text="Recipients (broadcast hanya ke list ini bila tidak kosong)", foreground="#666").grid(
             row=13, column=0, columnspan=4, sticky="w", pady=(8, 2)
@@ -1936,6 +1941,91 @@ class TelegramScraperGUI:
             self._log(f"members.csv di-backup ke {backup_path}")
         else:
             self._log_broadcast("Hasil scrape (in-memory) dikosongkan.")
+
+    def _import_broadcast_csv(self) -> None:
+        """Import 1+ file CSV hasil Members Scraper ke daftar Broadcast.
+
+        Multi-select didukung; tiap file akan di-append ke `members.csv`
+        global via `append_members_dedup` (dedup by ID), jadi:
+          - Tidak overwrite data yang sudah ada.
+          - Tidak ada duplikat antar-file.
+          - Persist setelah restart aplikasi.
+        """
+        # Default folder: Hasil Scrape Member/ (kalau ada) untuk akses cepat.
+        per_group_dir = Path("Hasil Scrape Member")
+        initial_dir = str(per_group_dir if per_group_dir.exists() else Path.cwd())
+
+        paths = filedialog.askopenfilenames(
+            title="Import CSV ke Broadcast (multi-select didukung)",
+            initialdir=initial_dir,
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not paths:
+            return
+
+        before_total = len(self.broadcast_rows)
+        per_file_stats: list[tuple[str, int, int]] = []  # (file, read, added)
+        skipped_files: list[tuple[str, str]] = []  # (file, reason)
+
+        for path_str in paths:
+            path = Path(path_str)
+            try:
+                rows = read_members_csv(str(path))
+            except Exception as exc:
+                skipped_files.append((path.name, f"baca gagal: {type(exc).__name__}: {exc}"))
+                continue
+
+            if not rows:
+                skipped_files.append((path.name, "file kosong / tidak ada baris"))
+                continue
+
+            # Validasi minimum: harus ada kolom ID (untuk dedup).
+            sample_keys = set(rows[0].keys())
+            if "ID" not in sample_keys:
+                skipped_files.append((path.name, "kolom 'ID' tidak ditemukan"))
+                continue
+
+            # Filter row tanpa ID — tidak bisa dedup, lebih aman skip.
+            valid_rows = [r for r in rows if (r.get("ID") or "").strip()]
+            if not valid_rows:
+                skipped_files.append((path.name, "tidak ada baris dengan ID terisi"))
+                continue
+
+            try:
+                before, after = append_members_dedup(self.config.members_csv, valid_rows)
+            except Exception as exc:
+                skipped_files.append((path.name, f"append gagal: {type(exc).__name__}: {exc}"))
+                continue
+
+            added = after - before
+            per_file_stats.append((path.name, len(valid_rows), added))
+
+        # Reload list dari members.csv yang sudah diupdate.
+        self._reload_broadcast_members()
+        after_total = len(self.broadcast_rows)
+        added_total = after_total - before_total
+
+        lines = [
+            f"Import CSV selesai.",
+            f"  Total kontak sebelum: {before_total}",
+            f"  Total kontak sesudah: {after_total} (+{added_total} unik baru)",
+            "",
+        ]
+        if per_file_stats:
+            lines.append("Per file:")
+            for fname, read_n, added_n in per_file_stats:
+                lines.append(f"  - {fname}: {read_n} dibaca, +{added_n} unik baru")
+        if skipped_files:
+            lines.append("")
+            lines.append("File di-skip:")
+            for fname, reason in skipped_files:
+                lines.append(f"  - {fname}: {reason}")
+
+        messagebox.showinfo("Import CSV", "\n".join(lines))
+        self._log_broadcast(
+            f"Import CSV: {len(per_file_stats)} file diimport, +{added_total} kontak unik baru "
+            f"(total kini {after_total})"
+        )
 
     def _apply_broadcast_filter(self) -> None:
         if not hasattr(self, "broadcast_listbox"):
