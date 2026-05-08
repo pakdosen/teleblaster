@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import re
 import threading
 from pathlib import Path
@@ -3191,24 +3192,97 @@ class TelegramScraperGUI:
             await app.send_media_group(chat_target, media_plain)
 
     async def _send_broadcast_payload_input_user(self, app, user_id: int, access_hash: int, html_text: str, attachments: list[str]) -> None:
-        # Raw fallback only supports text message in this implementation.
-        if attachments:
-            raise RuntimeError("Raw InputUser fallback hanya mendukung text tanpa attachment")
+        """Raw fallback kirim ke peer ID-only via InputPeerUser.
 
-        msg = re.sub(r"<[^>]+>", "", html_text or "").strip()
-        msg = html.unescape(msg)
-        if not msg:
-            raise RuntimeError("Konten text kosong untuk fallback InputUser")
+        Dipakai sebagai jaring pengaman saat `fetch_peers` gagal mempopulate
+        peer storage Pyrogram (jarang, biasanya akun benar-benar tidak punya
+        akses ke user tsb). Mendukung:
+          - text saja → `messages.SendMessage`
+          - 1+ attachment → upload via `app.save_file` lalu
+            `messages.SendMedia` per attachment dengan caption hanya di
+            attachment pertama (mengikuti perilaku UI).
+        """
+        peer = raw.types.InputPeerUser(user_id=user_id, access_hash=access_hash)
+        plain_text = re.sub(r"<[^>]+>", "", html_text or "").strip()
+        plain_text = html.unescape(plain_text)
 
-        rnd = random.randint(1, 2_147_483_647)
-        await app.invoke(
-            raw.functions.messages.SendMessage(
-                peer=raw.types.InputPeerUser(user_id=user_id, access_hash=access_hash),
-                message=msg,
-                random_id=rnd,
-                no_webpage=True,
+        if not attachments:
+            if not plain_text:
+                raise RuntimeError("Konten text kosong untuk fallback InputUser")
+            await app.invoke(
+                raw.functions.messages.SendMessage(
+                    peer=peer,
+                    message=plain_text,
+                    random_id=random.randint(1, 2_147_483_647),
+                    no_webpage=True,
+                )
             )
+            return
+
+        # Caption hanya di attachment pertama (1024 char limit).
+        first_caption = (plain_text[:1024] or "") if plain_text else ""
+        long_text_remainder = (
+            plain_text if plain_text and len(plain_text) > 1024 else ""
         )
+
+        if long_text_remainder:
+            # Kirim dulu text panjang sebagai message terpisah agar tidak
+            # terpotong sebagai caption.
+            await app.invoke(
+                raw.functions.messages.SendMessage(
+                    peer=peer,
+                    message=long_text_remainder,
+                    random_id=random.randint(1, 2_147_483_647),
+                    no_webpage=True,
+                )
+            )
+            first_caption = ""
+
+        for idx, path in enumerate(attachments):
+            caption = first_caption if idx == 0 else ""
+            try:
+                uploaded = await app.save_file(path)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Gagal upload {os.path.basename(path)} ke Telegram: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+
+            file_name = os.path.basename(path)
+            if self._is_image_file(path):
+                media = raw.types.InputMediaUploadedPhoto(file=uploaded)
+            elif self._is_video_file(path):
+                media = raw.types.InputMediaUploadedDocument(
+                    file=uploaded,
+                    mime_type="video/mp4",
+                    attributes=[
+                        raw.types.DocumentAttributeFilename(file_name=file_name),
+                    ],
+                )
+            else:
+                mime = "application/octet-stream"
+                try:
+                    guess = app.guess_mime_type(path)
+                    if guess:
+                        mime = guess
+                except Exception:
+                    pass
+                media = raw.types.InputMediaUploadedDocument(
+                    file=uploaded,
+                    mime_type=mime,
+                    attributes=[
+                        raw.types.DocumentAttributeFilename(file_name=file_name),
+                    ],
+                )
+
+            await app.invoke(
+                raw.functions.messages.SendMedia(
+                    peer=peer,
+                    media=media,
+                    message=caption,
+                    random_id=random.randint(1, 2_147_483_647),
+                )
+            )
 
     async def _resolve_access_hash(self, app, user_id: int) -> int | None:
         try:
@@ -3486,7 +3560,7 @@ class TelegramScraperGUI:
                         try:
                             await self._send_broadcast_payload(app, target, html, attachments)
                         except PeerIdInvalid:
-                            # For ID-only recipients, try to prime peer cache using access hash then retry once.
+                            # For ID-only recipients, prime peer cache using access hash then retry once.
                             if username:
                                 raise
                             if not uid.isdigit():
@@ -3506,15 +3580,30 @@ class TelegramScraperGUI:
                                         "Solusi: pakai @username, atau scrape dulu group yang berisi user ini."
                                     )
 
-                                await app.invoke(
+                                # Prime Pyrogram peer storage. `users.GetUsers`
+                                # mengembalikan list `User` raw — kita HARUS
+                                # passing ke `fetch_peers` agar tersimpan di
+                                # storage; tanpa ini, retry `send_*` di bawah
+                                # akan tetap kena PeerIdInvalid (bug yang
+                                # terlihat saat manual targets numeric ID +
+                                # attachment).
+                                users_resp = await app.invoke(
                                     raw.functions.users.GetUsers(
                                         id=[raw.types.InputUser(user_id=int(uid), access_hash=access_hash)]
                                     )
                                 )
+                                if users_resp:
+                                    try:
+                                        await app.fetch_peers(users_resp)
+                                    except Exception:
+                                        pass
+
                                 try:
                                     await self._send_broadcast_payload(app, int(uid), html, attachments)
                                 except PeerIdInvalid:
-                                    # Final fallback for ID-only peers: direct raw send via InputPeerUser.
+                                    # Final fallback for ID-only peers: direct
+                                    # raw send via InputPeerUser. Mendukung
+                                    # text + attachment (foto/video/dokumen).
                                     await self._send_broadcast_payload_input_user(
                                         app=app,
                                         user_id=int(uid),
