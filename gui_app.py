@@ -3627,6 +3627,56 @@ class TelegramScraperGUI:
             self._post(lambda t=total, d1=delay_min, d2=delay_max: self._log_broadcast(f"Broadcast mulai. target={t}, delay={d1:.1f}-{d2:.1f}s"))
             self._post(lambda t=total: self._reset_broadcast_progress(t))
 
+            # Optimasi: kalau pakai akun spesifik (rotasi dimatikan),
+            # build & connect Client SEKALI di luar loop dan reuse untuk
+            # semua iterasi. Ini menghilangkan handshake MTProto 3-10s
+            # per recipient yang sebelumnya bikin startup broadcast lambat
+            # (sama dengan fix Grup Scrapper join di PR #4).
+            shared_app = None
+            shared_phone: str | None = None
+            shared_aborted = False  # set true kalau FloodWait >= 1h → stop loop
+            if broadcast_account_phone:
+                try:
+                    shared_app = await self.manager.build_client(
+                        broadcast_account_phone, password
+                    )
+                    await shared_app.connect()
+                    shared_phone = broadcast_account_phone
+                except Exception as exc:
+                    self._post(
+                        lambda e=exc: self._log_broadcast(
+                            f"Gagal connect ke akun terpilih: {type(e).__name__}: {e}"
+                        )
+                    )
+                    raise
+
+            async def _call_op_shared(op):
+                """Run op pada shared_app (single-account mode).
+
+                FloodWait < 1h → sleep + retry sekali pada app yang sama.
+                FloodWait >= 1h → set cooldown + tandai shared_aborted + raise
+                supaya outer try/except mark row failed; loop berikutnya
+                akan auto-skip karena shared_aborted.
+                """
+                nonlocal shared_aborted
+                try:
+                    result = await op(shared_app, shared_phone)
+                    return result, shared_phone
+                except FloodWait as fw:
+                    wait = int(fw.value)
+                    if wait >= 3600:
+                        self.manager.set_cooldown(
+                            phone=shared_phone, seconds=wait
+                        )
+                        shared_aborted = True
+                        raise RuntimeError(
+                            f"Akun {mask_phone(shared_phone)} kena FloodWait {wait}s; cooldown dipasang. "
+                            "Broadcast dihentikan; pilih akun lain atau tunggu cooldown habis."
+                        ) from fw
+                    await asyncio.sleep(wait + 2)
+                    result = await op(shared_app, shared_phone)
+                    return result, shared_phone
+
             for row in rows:
                 uid = row.get("ID", "").strip()
                 username = (row.get("Username") or "").strip()
@@ -3706,9 +3756,18 @@ class TelegramScraperGUI:
 
                         return True
 
-                    _, used_phone = await self._execute_on_account(
-                        password, broadcast_account_phone, _op
-                    )
+                    if shared_aborted:
+                        # Akun kena FloodWait long-cooldown; sisa target
+                        # tidak akan terkirim — mark failed dan lanjut.
+                        raise RuntimeError(
+                            "Broadcast dihentikan: akun terpilih dalam cooldown."
+                        )
+                    if shared_app is not None:
+                        _, used_phone = await _call_op_shared(_op)
+                    else:
+                        _, used_phone = await self._execute_on_account(
+                            password, broadcast_account_phone, _op
+                        )
                     sent += 1
                     if source == "csv" and uid:
                         done_ids.add(uid)
@@ -3743,6 +3802,15 @@ class TelegramScraperGUI:
             self._post(lambda s=summary: self._log_broadcast(s))
             self._post(lambda s=summary: messagebox.showinfo("Broadcast Result", s))
             self._post(self._reload_broadcast_members)
+
+            # Disconnect shared client (single-account mode). Connect/disconnect
+            # MTProto handshake mahal (3-10s) — kita reuse 1 koneksi untuk
+            # semua iterasi, jadi cukup disconnect sekali di akhir.
+            if shared_app is not None:
+                try:
+                    await shared_app.disconnect()
+                except Exception:
+                    pass
 
         self._run_async_job(_job())
 
