@@ -16,7 +16,7 @@ from PIL import Image, ImageTk
 from pyrogram import Client
 from pyrogram import raw
 from pyrogram.enums import ChatMembersFilter, ChatType, MessageEntityType, ParseMode
-from pyrogram.errors import FloodWait, PeerIdInvalid, SessionPasswordNeeded
+from pyrogram.errors import FloodWait, PeerFlood, PeerIdInvalid, SessionPasswordNeeded
 from pyrogram.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo
 
 from account_manager import AccountManager
@@ -911,12 +911,27 @@ class TelegramScraperGUI:
         self.broadcast_delay_max.insert(0, "20")
         self.broadcast_delay_max.pack(side=tk.LEFT)
 
+        # Frame untuk stack 2 checkbox di col 0 row 7 tanpa mengubah
+        # row layout di bawahnya (Search/Manual targets/Listbox dll).
+        opts_frame = ttk.Frame(frm)
+        opts_frame.grid(row=7, column=0, sticky="w")
+
         self.broadcast_selected_only = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            frm,
+            opts_frame,
             text="Broadcast only selected members",
             variable=self.broadcast_selected_only,
-        ).grid(row=7, column=0, sticky="w")
+        ).pack(anchor="w")
+
+        # Auto-rotate ke akun lain saat akun aktif kena PEER_FLOOD /
+        # FloodWait >= 1 jam. Default off agar perilaku lama tetap
+        # default (kalau akun terblok, broadcast berhenti).
+        self.broadcast_auto_rotate_on_block = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opts_frame,
+            text="Auto-rotate akun saat terblok (PEER_FLOOD / FW >= 1h)",
+            variable=self.broadcast_auto_rotate_on_block,
+        ).pack(anchor="w")
 
         ttk.Button(frm, text="Run Broadcast", style="Accent.TButton", command=self._run_broadcast).grid(row=7, column=1, sticky="w", padx=8, pady=8)
 
@@ -3634,7 +3649,13 @@ class TelegramScraperGUI:
             # (sama dengan fix Grup Scrapper join di PR #4).
             shared_app = None
             shared_phone: str | None = None
-            shared_aborted = False  # set true kalau FloodWait >= 1h → stop loop
+            shared_aborted = False  # set true kalau akun terblok & no rotasi
+            burned_phones: set[str] = set()  # phones yang kena PEER_FLOOD/FW long
+            auto_rotate_on_block = (
+                bool(self.broadcast_auto_rotate_on_block.get())
+                if hasattr(self, "broadcast_auto_rotate_on_block")
+                else False
+            )
             if broadcast_account_phone:
                 try:
                     shared_app = await self.manager.build_client(
@@ -3650,32 +3671,112 @@ class TelegramScraperGUI:
                     )
                     raise
 
+            async def _try_rotate_to_next_account() -> bool:
+                """Switch shared_app/shared_phone ke akun login lain yang
+                tidak sedang cooldown & belum burned di sesi ini.
+
+                Returns True kalau berhasil pindah & connect, False kalau
+                tidak ada kandidat / gagal connect ke semuanya.
+                """
+                nonlocal shared_app, shared_phone
+                while True:
+                    next_phone = self.manager.get_next_phone(exclude=burned_phones)
+                    if not next_phone:
+                        self._post(
+                            lambda: self._log_broadcast(
+                                "Tidak ada akun lain yang tersedia untuk rotasi; broadcast dihentikan."
+                            )
+                        )
+                        return False
+                    # Tutup koneksi lama dulu (kalau ada).
+                    if shared_app is not None:
+                        try:
+                            await shared_app.disconnect()
+                        except Exception:
+                            pass
+                        shared_app = None
+                    try:
+                        new_app = await self.manager.build_client(next_phone, password)
+                        await new_app.connect()
+                        shared_app = new_app
+                        shared_phone = next_phone
+                        self._post(
+                            lambda p=next_phone: self._log_broadcast(
+                                f"Rotasi ke akun {mask_phone(p)}; lanjut broadcast."
+                            )
+                        )
+                        return True
+                    except Exception as exc:
+                        # Akun ini gagal connect (mis. session corrupt) —
+                        # skip & coba kandidat berikut.
+                        burned_phones.add(next_phone)
+                        self._post(
+                            lambda p=next_phone, e=exc: self._log_broadcast(
+                                f"Gagal connect ke akun rotasi {mask_phone(p)}: {type(e).__name__}: {e}; coba akun lain..."
+                            )
+                        )
+                        continue
+
             async def _call_op_shared(op):
                 """Run op pada shared_app (single-account mode).
 
                 FloodWait < 1h → sleep + retry sekali pada app yang sama.
-                FloodWait >= 1h → set cooldown + tandai shared_aborted + raise
-                supaya outer try/except mark row failed; loop berikutnya
-                akan auto-skip karena shared_aborted.
+                FloodWait >= 1h atau PEER_FLOOD → set cooldown:
+                  - Kalau auto_rotate_on_block aktif: pindah ke akun lain
+                    yang available, retry row yang sama.
+                  - Kalau tidak: tandai shared_aborted & raise, broadcast
+                    berhenti (sisa target di-mark failed cepat tanpa
+                    mencoba kirim).
                 """
                 nonlocal shared_aborted
-                try:
-                    result = await op(shared_app, shared_phone)
-                    return result, shared_phone
-                except FloodWait as fw:
-                    wait = int(fw.value)
-                    if wait >= 3600:
+                while True:
+                    try:
+                        result = await op(shared_app, shared_phone)
+                        return result, shared_phone
+                    except FloodWait as fw:
+                        wait = int(fw.value)
+                        if wait >= 3600:
+                            self.manager.set_cooldown(
+                                phone=shared_phone, seconds=wait
+                            )
+                            burned_phones.add(shared_phone)
+                            self._post(
+                                lambda p=shared_phone, w=wait: self._log_broadcast(
+                                    f"Akun {mask_phone(p)} kena FloodWait {w}s; cooldown dipasang."
+                                )
+                            )
+                            if auto_rotate_on_block:
+                                if await _try_rotate_to_next_account():
+                                    continue  # retry row pada akun baru
+                            shared_aborted = True
+                            raise RuntimeError(
+                                f"Akun {mask_phone(shared_phone)} kena FloodWait {wait}s; cooldown dipasang. "
+                                "Broadcast dihentikan; centang 'Auto-rotate akun' atau pilih akun lain."
+                            ) from fw
+                        await asyncio.sleep(wait + 2)
+                        # retry on same app — loop continues
+                        continue
+                    except PeerFlood as pf:
+                        # Telegram mendeteksi spam; akun di-rate-limit
+                        # secara global (biasanya 2-24 jam). Set cooldown
+                        # 2 jam (sama default dengan execute_with_rotation).
                         self.manager.set_cooldown(
-                            phone=shared_phone, seconds=wait
+                            phone=shared_phone, seconds=7200
                         )
+                        burned_phones.add(shared_phone)
+                        self._post(
+                            lambda p=shared_phone: self._log_broadcast(
+                                f"Akun {mask_phone(p)} kena PEER_FLOOD; cooldown 2 jam dipasang."
+                            )
+                        )
+                        if auto_rotate_on_block:
+                            if await _try_rotate_to_next_account():
+                                continue  # retry row pada akun baru
                         shared_aborted = True
                         raise RuntimeError(
-                            f"Akun {mask_phone(shared_phone)} kena FloodWait {wait}s; cooldown dipasang. "
-                            "Broadcast dihentikan; pilih akun lain atau tunggu cooldown habis."
-                        ) from fw
-                    await asyncio.sleep(wait + 2)
-                    result = await op(shared_app, shared_phone)
-                    return result, shared_phone
+                            f"Akun {mask_phone(shared_phone)} kena PEER_FLOOD; broadcast dihentikan. "
+                            "Centang 'Auto-rotate akun' atau pilih akun lain."
+                        ) from pf
 
             for row in rows:
                 uid = row.get("ID", "").strip()
@@ -3760,7 +3861,7 @@ class TelegramScraperGUI:
                         # Akun kena FloodWait long-cooldown; sisa target
                         # tidak akan terkirim — mark failed dan lanjut.
                         raise RuntimeError(
-                            "Broadcast dihentikan: akun terpilih dalam cooldown."
+                            "Broadcast dihentikan: akun terblok (PEER_FLOOD/FW) & tidak ada rotasi."
                         )
                     if shared_app is not None:
                         _, used_phone = await _call_op_shared(_op)
