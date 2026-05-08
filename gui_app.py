@@ -1542,27 +1542,88 @@ class TelegramScraperGUI:
 
         self._run_async_job(_job())
 
+    @staticmethod
+    def _format_phase_summary(
+        *,
+        phase: str,
+        phone: str,
+        chat_title: str,
+        fetched: int,
+        global_before: int,
+        global_after: int,
+        per_group_path: str | None,
+        per_group_before: int,
+        per_group_after: int,
+    ) -> str:
+        """Format ringkasan satu fase scrape (Visible atau Hidden).
+
+        Membedakan dengan jelas antara:
+          - `fetched`: jumlah user yang berhasil dibaca dari Telegram pada fase ini
+          - `per_group`: jumlah baris di file CSV per-grup setelah dedup
+          - `global members.csv`: jumlah baris di file gabungan semua grup
+
+        Sebelumnya hanya menampilkan `before`/`after` dari `members.csv` global,
+        yang membingungkan karena angkanya jauh lebih besar dari isi file
+        per-grup (sumber kebenaran yang user lihat).
+        """
+        added_pg = max(per_group_after - per_group_before, 0)
+        added_global = max(global_after - global_before, 0)
+        title = (chat_title or "").strip()
+        head = f"{phase} scrape via {phone}"
+        if title:
+            head += f" ({title})"
+        head += " selesai."
+        lines = [
+            head,
+            f"  Fetched dari grup: {fetched} member",
+        ]
+        if per_group_path:
+            lines.append(
+                f"  Per-grup CSV: {per_group_after} record (+{added_pg} unik baru fase ini)"
+            )
+            lines.append(f"  File: {per_group_path}")
+        lines.append(
+            f"  members.csv global: {global_after} record (+{added_global} unik baru fase ini)"
+        )
+        return "\n".join(lines)
+
     def _show_combined_scrape_summary(self, visible: dict | None, hidden: dict | None) -> None:
+        # Ambil snapshot terakhir dari per-grup & global agar user punya angka
+        # tunggal yang bisa di-cross-check langsung dengan file CSV di disk.
+        last_stage = hidden or visible
+        first_stage = visible or hidden
+
         lines = ["Visible + Hidden scrape selesai."]
-        if visible:
+        title = (last_stage or {}).get("chat_title") or ""
+        if title:
+            lines.append(f"  Grup: {title}")
+        phone = (last_stage or {}).get("phone")
+        if phone:
+            lines.append(f"  Akun: {phone}")
+        lines.append("")
+
+        for stage_label, stage in (("Visible", visible), ("Hidden", hidden)):
+            if not stage:
+                continue
+            fetched = stage.get("fetched", 0)
+            pg_added = max(stage.get("per_group_after", 0) - stage.get("per_group_before", 0), 0)
+            global_added = max(stage.get("global_after", 0) - stage.get("global_before", 0), 0)
             lines.append(
-                f"  Visible via {visible.get('phone', '?')}: "
-                f"before={visible.get('before', '?')}, after={visible.get('after', '?')}"
+                f"  {stage_label}: fetched {fetched}, +{pg_added} unik di per-grup, "
+                f"+{global_added} unik di members.csv"
             )
-        if hidden:
-            lines.append(
-                f"  Hidden via {hidden.get('phone', '?')}: "
-                f"before={hidden.get('before', '?')}, after={hidden.get('after', '?')}"
-            )
-        # Per-grup path harus sama untuk kedua fase (file digabung otomatis via
-        # append_members_dedup). Ambil unik untuk jaga-jaga kalau title berubah.
-        paths: list[str] = []
-        for stage in (visible, hidden):
-            p = (stage or {}).get("per_group_path")
-            if p and p not in paths:
-                paths.append(p)
-        for p in paths:
-            lines.append(f"  Per-grup: {p}")
+
+        # Total final (sumber kebenaran user) — dari fase terakhir yang ditulis.
+        if last_stage:
+            pg_total = last_stage.get("per_group_after", 0)
+            global_total = last_stage.get("global_after", 0)
+            pg_path = last_stage.get("per_group_path") or (first_stage or {}).get("per_group_path")
+            lines.append("")
+            lines.append(f"  TOTAL per-grup (Visible+Hidden, dedup): {pg_total} record")
+            if pg_path:
+                lines.append(f"  File: {pg_path}")
+            lines.append(f"  TOTAL members.csv global: {global_total} record")
+
         summary = "\n".join(lines)
         self._log(summary)
         messagebox.showinfo("Scrape Result", summary)
@@ -2106,28 +2167,33 @@ class TelegramScraperGUI:
         self._refresh_picked_listbox()
         self._log_broadcast("Recipients: dikosongkan")
 
-    def _write_per_group_csv(self, chat_info: dict, rows: list[dict]) -> str | None:
+    def _write_per_group_csv(
+        self, chat_info: dict, rows: list[dict]
+    ) -> tuple[str | None, int, int]:
         """Tulis hasil scrape ke `Hasil Scrape Member/<title>.csv` (per-grup) dengan dedup.
 
-        Returns the path string when written, atau None bila tidak ada rows / title kosong.
+        Returns (path, before, after) — `before`/`after` adalah jumlah baris di
+        file per-grup sebelum dan setelah append (sesuai semantik
+        `append_members_dedup`). Mengembalikan (None, 0, 0) bila tidak ada
+        rows / title kosong / gagal tulis.
         """
         if not rows:
-            return None
+            return None, 0, 0
         title = (chat_info or {}).get("title") or ""
         if not title.strip():
             # Fallback ke Group ID kalau title kosong, agar file tetap punya nama deskriptif.
             title = f"group_{(chat_info or {}).get('id') or 'untitled'}"
         try:
             path = per_group_members_path(self.config.members_csv, title)
-            append_members_dedup(str(path), rows)
-            return str(path)
+            before, after = append_members_dedup(str(path), rows)
+            return str(path), before, after
         except Exception as exc:
             self._post(
                 lambda e=exc: self._log(
                     f"Gagal tulis per-grup CSV: {type(e).__name__}: {e}"
                 )
             )
-            return None
+            return None, 0, 0
 
     async def _scrape_visible(self, password: str, target: str, *, show_popup: bool = True) -> dict | None:
         rows: list[dict] = []
@@ -2188,11 +2254,20 @@ class TelegramScraperGUI:
             return True
 
         _, phone = await self._execute_with_scrape_hint(password, target, _op)
-        before, after = append_members_dedup(self.config.members_csv, rows)
-        per_group_path = self._write_per_group_csv(chat_info, rows)
-        summary = f"Visible scrape via {phone} selesai. before={before}, after={after}"
-        if per_group_path:
-            summary += f"\nPer-grup: {per_group_path}"
+        fetched = len(rows)
+        global_before, global_after = append_members_dedup(self.config.members_csv, rows)
+        per_group_path, pg_before, pg_after = self._write_per_group_csv(chat_info, rows)
+        summary = self._format_phase_summary(
+            phase="Visible",
+            phone=phone,
+            chat_title=chat_info.get("title") or "",
+            fetched=fetched,
+            global_before=global_before,
+            global_after=global_after,
+            per_group_path=per_group_path,
+            per_group_before=pg_before,
+            per_group_after=pg_after,
+        )
         self._post(lambda s=summary: self._log(s))
         if show_popup:
             self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
@@ -2200,9 +2275,13 @@ class TelegramScraperGUI:
         return {
             "phase": "visible",
             "phone": phone,
-            "before": before,
-            "after": after,
+            "chat_title": chat_info.get("title") or "",
+            "fetched": fetched,
+            "global_before": global_before,
+            "global_after": global_after,
             "per_group_path": per_group_path,
+            "per_group_before": pg_before,
+            "per_group_after": pg_after,
         }
 
     async def _scrape_hidden(self, password: str, target: str, *, show_popup: bool = True) -> dict | None:
@@ -2291,12 +2370,21 @@ class TelegramScraperGUI:
 
         _, phone = await self._execute_with_scrape_hint(password, target, _op)
         rows_list = list(users.values())
-        before, after = append_members_dedup(self.config.members_csv, rows_list)
-        per_group_path = self._write_per_group_csv(chat_info, rows_list)
+        fetched = len(rows_list)
+        global_before, global_after = append_members_dedup(self.config.members_csv, rows_list)
+        per_group_path, pg_before, pg_after = self._write_per_group_csv(chat_info, rows_list)
         save_checkpoint(self.config.checkpoint_file, {})
-        summary = f"Hidden scrape via {phone} selesai. before={before}, after={after}"
-        if per_group_path:
-            summary += f"\nPer-grup: {per_group_path}"
+        summary = self._format_phase_summary(
+            phase="Hidden",
+            phone=phone,
+            chat_title=chat_info.get("title") or "",
+            fetched=fetched,
+            global_before=global_before,
+            global_after=global_after,
+            per_group_path=per_group_path,
+            per_group_before=pg_before,
+            per_group_after=pg_after,
+        )
         self._post(lambda s=summary: self._log(s))
         if show_popup:
             self._post(lambda s=summary: messagebox.showinfo("Scrape Result", s))
@@ -2304,9 +2392,13 @@ class TelegramScraperGUI:
         return {
             "phase": "hidden",
             "phone": phone,
-            "before": before,
-            "after": after,
+            "chat_title": chat_info.get("title") or "",
+            "fetched": fetched,
+            "global_before": global_before,
+            "global_after": global_after,
             "per_group_path": per_group_path,
+            "per_group_before": pg_before,
+            "per_group_after": pg_after,
         }
 
     def _run_adder(self) -> None:
