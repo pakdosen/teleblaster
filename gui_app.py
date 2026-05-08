@@ -1051,11 +1051,21 @@ class TelegramScraperGUI:
 
         ttk.Label(frm, text="Sessions", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        self.sessions_box = tk.Text(frm, height=16, width=90, wrap=tk.WORD, font=("Consolas", 10))
+        # Listbox supaya user bisa klik untuk memilih session yang
+        # akan dihapus. `self.session_phones` menyimpan phone (full,
+        # unmasked) per baris untuk mapping idx → phone.
+        self.session_phones: list[str] = []
+        self.sessions_box = tk.Listbox(frm, height=16, width=90, font=("Consolas", 10))
         self.sessions_box.grid(row=1, column=0, columnspan=4, sticky="nsew")
-        self._style_text_widget(self.sessions_box)
+        self._style_listbox_widget(self.sessions_box)
 
         ttk.Button(frm, text="Refresh", command=self._refresh_sessions_view).grid(row=2, column=0, pady=8, sticky="w")
+        ttk.Button(
+            frm,
+            text="Hapus Akun Terpilih",
+            style="Danger.TButton",
+            command=self._remove_selected_session,
+        ).grid(row=2, column=1, pady=8, sticky="w", padx=6)
 
         ttk.Label(frm, text="Encryption Password").grid(row=3, column=0, sticky="w")
         self.sessions_password = ttk.Entry(frm, show="*", width=28)
@@ -3917,18 +3927,105 @@ class TelegramScraperGUI:
 
     def _refresh_sessions_view(self) -> None:
         sessions = self.manager.list_sessions()
-        self.sessions_box.delete("1.0", tk.END)
+        self.sessions_box.delete(0, tk.END)
+        self.session_phones = []
         if not sessions:
-            self.sessions_box.insert(tk.END, "Belum ada akun login tersimpan.\n")
-            self.sessions_box.insert(tk.END, "Silakan login dari tab Login lalu klik Complete Login/QR Login.\n")
+            self.sessions_box.insert(tk.END, "Belum ada akun login tersimpan.")
+            self.sessions_box.insert(tk.END, "Silakan login dari tab Login lalu klik Complete Login/QR Login.")
+            self.session_phones = ["", ""]  # placeholder agar idx tetap sinkron
         else:
-            self.sessions_box.insert(tk.END, f"Total akun login tersimpan: {len(sessions)}\n\n")
             for sess in sessions:
                 rem = self.manager.get_cooldown_remaining(sess.phone)
                 status = f"Cooldown {rem}s" if rem else "Active"
-                self.sessions_box.insert(tk.END, f"{sess.phone} | {mask_phone(sess.phone)} | {status}\n")
+                self.sessions_box.insert(
+                    tk.END, f"{sess.phone} | {mask_phone(sess.phone)} | {status}"
+                )
+                self.session_phones.append(sess.phone)
 
         self._refresh_account_pickers()
+
+    def _remove_selected_session(self) -> None:
+        """Hapus session akun yang dipilih di listbox.
+
+        Step:
+          1. Validasi pilihan + password.
+          2. Konfirmasi via dialog.
+          3. Best-effort `app.log_out()` agar session di-invalidate di
+             sisi Telegram (kalau gagal/sudah invalid, lanjut tetap
+             hapus file lokal).
+          4. Hapus file session via `manager.remove_session(phone)`.
+          5. Refresh view.
+        """
+        selection = self.sessions_box.curselection()
+        if not selection:
+            messagebox.showinfo(
+                "Hapus Akun",
+                "Pilih satu akun di list dulu (klik baris yang mau dihapus).",
+            )
+            return
+        idx = selection[0]
+        if idx >= len(self.session_phones):
+            return
+        phone = self.session_phones[idx]
+        if not phone:
+            messagebox.showinfo("Hapus Akun", "Baris ini bukan akun (placeholder).")
+            return
+
+        password = self.sessions_password.get().strip()
+        if not password:
+            messagebox.showwarning(
+                "Input",
+                "Encryption password wajib diisi (untuk logout dari Telegram sebelum hapus).",
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Konfirmasi Hapus Akun",
+            f"Hapus akun {mask_phone(phone)}?\n\n"
+            "Tindakan ini akan:\n"
+            f"  - Logout dari Telegram (best-effort)\n"
+            f"  - Menghapus file session lokal ({phone}.json)\n\n"
+            "Untuk login ulang, gunakan tab Login.",
+        ):
+            return
+
+        async def _job():
+            # Best-effort logout — kalau gagal (mis. session sudah
+            # invalid), tetap lanjut hapus file lokal supaya user
+            # tidak stuck.
+            logout_ok = False
+            logout_err: str | None = None
+            try:
+                app = await self.manager.build_client(phone, password)
+                await app.connect()
+                try:
+                    await app.log_out()
+                    logout_ok = True
+                except Exception as exc:
+                    logout_err = f"{type(exc).__name__}: {exc}"
+                finally:
+                    try:
+                        await app.disconnect()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logout_err = f"{type(exc).__name__}: {exc}"
+
+            removed = self.manager.remove_session(phone)
+            self._post(self._refresh_sessions_view)
+
+            if logout_ok and removed:
+                msg = f"OK {mask_phone(phone)}: logout Telegram + hapus file sukses."
+            elif removed:
+                msg = (
+                    f"PARTIAL {mask_phone(phone)}: file dihapus, tapi logout gagal "
+                    f"({logout_err}). Session mungkin masih aktif di sisi Telegram."
+                )
+            else:
+                msg = f"GAGAL hapus {mask_phone(phone)}: file tidak ditemukan."
+            self._post(lambda m=msg: self._log(m))
+
+        self._run_async_job(_job())
 
     def _account_choices(self) -> list[str]:
         choices = [self.AUTO_ACCOUNT_LABEL]
