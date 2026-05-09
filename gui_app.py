@@ -132,8 +132,19 @@ class TelegramScraperGUI:
         self.grup_scrapper_results: list[dict] = []
         self._grup_scrapper_index_by_iid: dict[str, dict] = {}
 
+        # State untuk auto-refresh status cooldown di tab Sessions.
+        # Map phone → remaining-seconds saat tick terakhir; dipakai
+        # untuk mendeteksi transisi cooldown→Active dan log notifikasi.
+        self._prev_cooldown_state: dict[str, int] = {}
+        self._sessions_tick_after_id: str | None = None
+
         self._build_ui()
         self._refresh_sessions_view()
+        # Kick off periodic cooldown countdown tick. Setelah ini
+        # tab Sessions auto-refresh tiap 5 detik tanpa user harus
+        # klik Refresh — dan saat ada akun yang cooldown-nya selesai,
+        # event ditulis ke Activity Log.
+        self._tick_sessions_cooldowns()
 
     def _load_logo(self, size: int) -> ImageTk.PhotoImage | None:
         if size in self._logo_cache:
@@ -4080,8 +4091,43 @@ class TelegramScraperGUI:
 
         self._run_async_job(_job())
 
-    def _refresh_sessions_view(self) -> None:
+    @staticmethod
+    def _format_cooldown(remaining_seconds: int) -> str:
+        """Format detik tersisa cooldown jadi string yang mudah dibaca.
+
+        Contoh:
+          0    → "Active"
+          59   → "Cooldown 59s"
+          125  → "Cooldown 2m05s"
+          7321 → "Cooldown 2h02m01s"
+        """
+        secs = int(remaining_seconds)
+        if secs <= 0:
+            return "Active"
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        if h > 0:
+            return f"Cooldown {h}h{m:02d}m{s:02d}s"
+        if m > 0:
+            return f"Cooldown {m}m{s:02d}s"
+        return f"Cooldown {s}s"
+
+    def _refresh_sessions_view(self, skip_pickers: bool = False) -> None:
+        """Render ulang listbox akun di tab Sessions.
+
+        Setiap baris di-color-code: hijau untuk akun Active, oranye
+        untuk akun yang masih cooldown. Selection user (kalau ada)
+        di-preserve agar klik Refresh / auto-tick tidak membatalkan
+        baris yang sudah dipilih untuk "Hapus Akun Terpilih".
+
+        ``skip_pickers=True`` dipakai oleh tick auto-refresh agar
+        combobox akun (Login/Broadcast/Scrape) tidak ikut di-reset
+        tiap 5 detik (mengganggu kalau dropdown sedang dibuka user).
+        """
         sessions = self.manager.list_sessions()
+
+        saved_selection = tuple(self.sessions_box.curselection())
+
         self.sessions_box.delete(0, tk.END)
         self.session_phones = []
         if not sessions:
@@ -4089,15 +4135,91 @@ class TelegramScraperGUI:
             self.sessions_box.insert(tk.END, "Silakan login dari tab Login lalu klik Complete Login/QR Login.")
             self.session_phones = ["", ""]  # placeholder agar idx tetap sinkron
         else:
+            ok_color = self.colors.get("ok", "#34d399")
+            warn_color = self.colors.get("warn", "#f5b454")
             for sess in sessions:
-                rem = self.manager.get_cooldown_remaining(sess.phone)
-                status = f"Cooldown {rem}s" if rem else "Active"
+                rem = int(self.manager.get_cooldown_remaining(sess.phone))
+                status = self._format_cooldown(rem)
+                idx = self.sessions_box.size()
                 self.sessions_box.insert(
                     tk.END, f"{sess.phone} | {mask_phone(sess.phone)} | {status}"
                 )
                 self.session_phones.append(sess.phone)
+                try:
+                    self.sessions_box.itemconfig(
+                        idx, foreground=(warn_color if rem > 0 else ok_color)
+                    )
+                except tk.TclError:
+                    # Beberapa platform menolak itemconfig pada
+                    # widget yang belum sepenuhnya ter-mapped; warna
+                    # hanya kosmetik, lanjut tanpa color.
+                    pass
 
-        self._refresh_account_pickers()
+        for sel in saved_selection:
+            try:
+                if isinstance(sel, int) and 0 <= sel < self.sessions_box.size():
+                    self.sessions_box.selection_set(sel)
+            except tk.TclError:
+                pass
+
+        if not skip_pickers:
+            self._refresh_account_pickers()
+
+    def _tick_sessions_cooldowns(self) -> None:
+        """Tick periodik (~5 detik) untuk update countdown cooldown
+        di tab Sessions.
+
+        - Saat ada akun cooldown aktif: re-render listbox supaya
+          countdown turun real-time.
+        - Saat akun keluar cooldown (transisi cooldown→Active):
+          tulis notifikasi ke Activity Log + re-render supaya
+          warna baris berubah dari oranye ke hijau.
+        - Saat semua akun Active: tidak re-render (hemat resources),
+          tapi tick tetap dijadwalkan agar siap mendeteksi cooldown
+          baru saat broadcast jalan.
+        """
+        self._sessions_tick_after_id = None
+        try:
+            sessions = self.manager.list_sessions()
+            current_phones: set[str] = set()
+            any_active_cooldown = False
+            any_transition = False
+            for sess in sessions:
+                current_phones.add(sess.phone)
+                rem = int(self.manager.get_cooldown_remaining(sess.phone))
+                prev = int(self._prev_cooldown_state.get(sess.phone, 0))
+                if prev > 0 and rem <= 0:
+                    any_transition = True
+                    try:
+                        self._log(
+                            f"Akun {mask_phone(sess.phone)} cooldown selesai, siap dipakai."
+                        )
+                    except Exception:
+                        pass
+                self._prev_cooldown_state[sess.phone] = rem
+                if rem > 0:
+                    any_active_cooldown = True
+
+            # Buang entri prev untuk akun yang sudah dihapus user.
+            for stale in list(self._prev_cooldown_state.keys()):
+                if stale not in current_phones:
+                    self._prev_cooldown_state.pop(stale, None)
+
+            if any_active_cooldown or any_transition:
+                self._refresh_sessions_view(skip_pickers=True)
+        except Exception:
+            # Tick error tidak boleh men-crash UI; coba lagi di tick
+            # berikutnya. Akar masalah biasanya transient (mis. file
+            # session sedang ditulis ulang).
+            pass
+        finally:
+            try:
+                self._sessions_tick_after_id = self.root.after(
+                    5000, self._tick_sessions_cooldowns
+                )
+            except Exception:
+                # root sudah destroyed (app closed). Berhenti.
+                self._sessions_tick_after_id = None
 
     def _remove_selected_session(self) -> None:
         """Hapus session akun yang dipilih di listbox.
