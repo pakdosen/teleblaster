@@ -3818,23 +3818,44 @@ class TelegramScraperGUI:
                     )
                     return None
 
-            async def _call_op_rotation_pooled(op):
+            async def _call_op_rotation_pooled(op, target_label: str = ""):
                 """Auto rotation mode dengan koneksi pool.
 
                 Mirror `execute_with_rotation` tapi reuse koneksi yang
                 sudah dibangun (bukan disconnect tiap iterasi). Round-robin
                 via `manager.get_next_phone(exclude=rotation_excluded)`.
 
-                Pada FloodWait/PeerFlood:
-                  - Set cooldown akun, exclude dari rotasi sesi ini,
-                    disconnect+pop dari pool, lanjut akun lain.
+                Penanganan exception:
+                  - FloodWait >= 1h / PeerFlood: set cooldown akun,
+                    exclude permanen sesi ini, disconnect+pop dari pool,
+                    lanjut akun lain.
                   - FloodWait < 1h: sleep + retry pada akun yang sama.
+                  - PeerIdInvalid: akun ini tidak kenal target (umum
+                    untuk target ID-only kalau access_hash CSV di-scrape
+                    pakai akun lain — access_hash di Telegram bersifat
+                    per-akun). Exclude akun ini SEMENTARA hanya untuk
+                    target ini, lanjut coba akun lain.
                 """
+                # Exclude sementara hanya untuk target sekarang — di-reset
+                # tiap kali fungsi dipanggil.
+                pid_invalid_tried: set[str] = set()
                 for _ in range(50):
                     phone = self.manager.get_next_phone(
-                        exclude=rotation_excluded
+                        exclude=rotation_excluded | pid_invalid_tried
                     )
                     if not phone:
+                        # Semua akun sudah dicoba untuk target ini
+                        if pid_invalid_tried and not rotation_excluded:
+                            raise RuntimeError(
+                                f"Tidak ada akun yang kenal target "
+                                f"{target_label or '(ID-only)'} "
+                                f"({len(pid_invalid_tried)} akun dicoba). "
+                                "Akses hash di CSV mungkin di-scrape pakai akun "
+                                "yang berbeda — akun broadcast sekarang tidak "
+                                "punya hak kirim ke user ini. Solusi: pakai "
+                                "@username, atau scrape ulang pakai akun yang "
+                                "akan dipakai broadcast."
+                            )
                         wait_s = self.manager.seconds_until_next_available()
                         raise RuntimeError(
                             "Tidak ada akun available untuk broadcast"
@@ -3890,6 +3911,19 @@ class TelegramScraperGUI:
                             )
                         )
                         continue
+                    except PeerIdInvalid:
+                        # Akun ini tidak kenal target (access_hash mismatch
+                        # / belum pernah lihat user). Coba akun lain di pool
+                        # — mungkin ada yang sudah punya peer ini di
+                        # storage atau bisa resolve via groupnya.
+                        pid_invalid_tried.add(phone)
+                        self._post(
+                            lambda p=phone, t=target_label: self._log_broadcast(
+                                f"Akun {mask_phone(p)} tidak kenal target {t}; "
+                                "coba akun lain..."
+                            )
+                        )
+                        continue
                 raise RuntimeError(
                     "Gagal selesaikan setelah rotasi banyak akun"
                 )
@@ -3916,7 +3950,7 @@ class TelegramScraperGUI:
 
                         try:
                             await self._send_broadcast_payload(app, target, html, attachments)
-                        except PeerIdInvalid:
+                        except PeerIdInvalid as initial_pid:
                             # For ID-only recipients, prime peer cache using access hash then retry once.
                             if username:
                                 raise
@@ -3931,11 +3965,13 @@ class TelegramScraperGUI:
                                     access_hash = await self._resolve_access_hash_with_hints(app, int(uid), group_id_raw)
 
                                 if access_hash is None:
-                                    raise RuntimeError(
-                                        f"Akun tidak kenal user ID {uid}: tidak ada access hash di session/CSV "
-                                        "dan user tidak ditemukan di group manapun yang Anda ikuti. "
-                                        "Solusi: pakai @username, atau scrape dulu group yang berisi user ini."
-                                    )
+                                    # Akun ini tidak punya access_hash. Re-raise
+                                    # PeerIdInvalid agar `_call_op_rotation_pooled`
+                                    # bisa coba akun lain yang mungkin kenal user
+                                    # ini (mis. akun lain yang join group yang
+                                    # sama). Fall back ke RuntimeError dengan
+                                    # pesan jelas hanya kalau semua akun gagal.
+                                    raise initial_pid
 
                                 # Prime Pyrogram peer storage. `users.GetUsers`
                                 # mengembalikan list `User` raw — kita HARUS
@@ -3984,8 +4020,11 @@ class TelegramScraperGUI:
                     else:
                         # Auto rotation mode: gunakan pool koneksi
                         # supaya akun yang sama tidak handshake ulang
-                        # tiap iterasi.
-                        _, used_phone = await _call_op_rotation_pooled(_op)
+                        # tiap iterasi. Lewatkan display_target supaya
+                        # log fallback PeerIdInvalid jelas target apa.
+                        _, used_phone = await _call_op_rotation_pooled(
+                            _op, display_target
+                        )
                     sent += 1
                     if source == "csv" and uid:
                         done_ids.add(uid)
