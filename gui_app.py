@@ -3666,6 +3666,14 @@ class TelegramScraperGUI:
                 if hasattr(self, "broadcast_auto_rotate_on_block")
                 else False
             )
+            # Pool koneksi untuk Auto rotation mode (broadcast_account_phone=None).
+            # Di mode rotasi, sebelumnya tiap iterasi build_client+connect+disconnect
+            # akun yang dipilih → MTProto handshake 3-10s per recipient. Pool ini
+            # cache app per-phone: koneksi pertama tiap akun bayar handshake sekali,
+            # iterasi berikutnya pakai akun yang sama instan. Disconnect semua di
+            # akhir _job(). Mirror dari fix shared_app (PR #14) tapi multi-akun.
+            clients_pool: dict[str, "Client"] = {}
+            rotation_excluded: set[str] = set()  # cooldown / connect failure
             if broadcast_account_phone:
                 try:
                     shared_app = await self.manager.build_client(
@@ -3788,6 +3796,104 @@ class TelegramScraperGUI:
                             "Centang 'Auto-rotate akun' atau pilih akun lain."
                         ) from pf
 
+            async def _get_or_build_pooled(phone: str):
+                """Ambil app dari pool kalau ada, atau build+connect baru.
+
+                Kalau gagal connect (mis. session corrupt), tandai
+                `rotation_excluded` agar tidak dipilih ulang.
+                """
+                if phone in clients_pool:
+                    return clients_pool[phone]
+                try:
+                    app = await self.manager.build_client(phone, password)
+                    await app.connect()
+                    clients_pool[phone] = app
+                    return app
+                except Exception as exc:
+                    rotation_excluded.add(phone)
+                    self._post(
+                        lambda p=phone, e=exc: self._log_broadcast(
+                            f"Gagal connect ke akun {mask_phone(p)}: {type(e).__name__}: {e}; skip akun ini."
+                        )
+                    )
+                    return None
+
+            async def _call_op_rotation_pooled(op):
+                """Auto rotation mode dengan koneksi pool.
+
+                Mirror `execute_with_rotation` tapi reuse koneksi yang
+                sudah dibangun (bukan disconnect tiap iterasi). Round-robin
+                via `manager.get_next_phone(exclude=rotation_excluded)`.
+
+                Pada FloodWait/PeerFlood:
+                  - Set cooldown akun, exclude dari rotasi sesi ini,
+                    disconnect+pop dari pool, lanjut akun lain.
+                  - FloodWait < 1h: sleep + retry pada akun yang sama.
+                """
+                for _ in range(50):
+                    phone = self.manager.get_next_phone(
+                        exclude=rotation_excluded
+                    )
+                    if not phone:
+                        wait_s = self.manager.seconds_until_next_available()
+                        raise RuntimeError(
+                            "Tidak ada akun available untuk broadcast"
+                            if wait_s <= 0
+                            else f"Semua akun cooldown; tunggu ~{wait_s}s"
+                        )
+                    app = await _get_or_build_pooled(phone)
+                    if app is None:
+                        continue
+                    try:
+                        result = await op(app, phone)
+                        return result, phone
+                    except FloodWait as fw:
+                        wait = int(fw.value)
+                        if wait >= 3600:
+                            self.manager.set_cooldown(phone=phone, seconds=wait)
+                            rotation_excluded.add(phone)
+                            bad = clients_pool.pop(phone, None)
+                            if bad is not None:
+                                try:
+                                    await bad.disconnect()
+                                except Exception:
+                                    pass
+                            self._post(
+                                lambda p=phone, w=wait: self._log_broadcast(
+                                    f"Akun {mask_phone(p)} kena FloodWait {w}s; "
+                                    "cooldown dipasang. Rotasi ke akun lain..."
+                                )
+                            )
+                            continue
+                        await asyncio.sleep(wait + 2)
+                        # retry pada akun yang sama (masih di pool)
+                        try:
+                            result = await op(app, phone)
+                            return result, phone
+                        except Exception:
+                            # kalau retry tetap gagal, fall through ke
+                            # exception handler luar (rotasi)
+                            raise
+                    except PeerFlood:
+                        self.manager.set_cooldown(phone=phone, seconds=7200)
+                        rotation_excluded.add(phone)
+                        bad = clients_pool.pop(phone, None)
+                        if bad is not None:
+                            try:
+                                await bad.disconnect()
+                            except Exception:
+                                pass
+                        self._post(
+                            lambda p=phone: self._log_broadcast(
+                                f"Akun {mask_phone(p)} kena PEER_FLOOD; "
+                                "cooldown 2h dipasang. Rotasi ke akun lain..."
+                            )
+                        )
+                        continue
+                raise RuntimeError(
+                    "Gagal selesaikan setelah rotasi banyak akun"
+                )
+
             for row in rows:
                 uid = row.get("ID", "").strip()
                 username = (row.get("Username") or "").strip()
@@ -3876,9 +3982,10 @@ class TelegramScraperGUI:
                     if shared_app is not None:
                         _, used_phone = await _call_op_shared(_op)
                     else:
-                        _, used_phone = await self._execute_on_account(
-                            password, broadcast_account_phone, _op
-                        )
+                        # Auto rotation mode: gunakan pool koneksi
+                        # supaya akun yang sama tidak handshake ulang
+                        # tiap iterasi.
+                        _, used_phone = await _call_op_rotation_pooled(_op)
                     sent += 1
                     if source == "csv" and uid:
                         done_ids.add(uid)
@@ -3914,14 +4021,23 @@ class TelegramScraperGUI:
             self._post(lambda s=summary: messagebox.showinfo("Broadcast Result", s))
             self._post(self._reload_broadcast_members)
 
-            # Disconnect shared client (single-account mode). Connect/disconnect
-            # MTProto handshake mahal (3-10s) — kita reuse 1 koneksi untuk
-            # semua iterasi, jadi cukup disconnect sekali di akhir.
+            # Disconnect koneksi yang dipakai broadcast.
+            # - shared_app: single-account mode (PR #14)
+            # - clients_pool: rotation mode pool (commit ini)
+            # MTProto handshake mahal (3-10s) — kita reuse 1 koneksi
+            # per akun untuk semua iterasi, jadi cukup disconnect sekali
+            # di akhir.
             if shared_app is not None:
                 try:
                     await shared_app.disconnect()
                 except Exception:
                     pass
+            for pooled_app in list(clients_pool.values()):
+                try:
+                    await pooled_app.disconnect()
+                except Exception:
+                    pass
+            clients_pool.clear()
 
         self._run_async_job(_job())
 
