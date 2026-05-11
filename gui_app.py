@@ -1202,6 +1202,12 @@ class TelegramScraperGUI:
         actions.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
         ttk.Button(
             actions,
+            text="Joinkan ke Akun Lain",
+            style="Accent.TButton",
+            command=self._account_manager_join_to_other,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            actions,
             text="Left Selected",
             style="Danger.TButton",
             command=self._account_manager_leave_selected,
@@ -5029,6 +5035,389 @@ class TelegramScraperGUI:
             messagebox.showinfo("Export", f"Berhasil disimpan ke:\n{path}")
         except Exception as exc:
             messagebox.showerror("Export", f"Gagal simpan CSV: {exc}")
+
+    def _pick_target_accounts_for_join(
+        self,
+        *,
+        chats: list[dict],
+        missing_per_phone: dict[str, list[dict]],
+        unknown_phones: set[str],
+    ) -> list[str] | None:
+        """Dialog khusus untuk Account Manager → 'Joinkan ke Akun Lain'.
+
+        Hanya menampilkan akun yang belum punya minimal 1 dari grup
+        terpilih. Akun dilabel dengan jumlah grup yang missing supaya
+        user tahu seberapa banyak yang akan di-join lewat akun itu.
+
+        ``unknown_phones`` adalah akun yang belum di-load cache-nya;
+        diberi badge khusus karena angka missing-nya cuma asumsi.
+        """
+        candidates = list(missing_per_phone.keys())
+        if not candidates:
+            messagebox.showinfo(
+                "Akun",
+                "Tidak ada akun kandidat — semua akun login sudah join semua grup terpilih.",
+            )
+            return None
+
+        win = tk.Toplevel(self.root)
+        win.title("Joinkan ke akun lain")
+        win.transient(self.root)
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+        win.configure(bg=self.colors.get("bg", "#0b0f17"))
+
+        ttk.Label(
+            win,
+            text=(
+                f"Akun kandidat untuk join {len(chats)} grup terpilih "
+                "(Ctrl/Shift untuk multi-select):"
+            ),
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        lb = tk.Listbox(
+            win,
+            height=min(16, max(4, len(candidates))),
+            width=64,
+            font=("Consolas", 10),
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+        )
+        lb.pack(fill=tk.BOTH, expand=True, padx=12)
+        self._style_listbox_widget(lb)
+
+        ok_color = self.colors.get("ok", "#34d399")
+        warn_color = self.colors.get("warn", "#f5b454")
+        for phone in candidates:
+            rem = int(self.manager.get_cooldown_remaining(phone))
+            status = self._format_cooldown(rem)
+            missing_count = len(missing_per_phone.get(phone, []))
+            if phone in unknown_phones:
+                miss_label = f"belum di-load (max {missing_count}/{len(chats)})"
+            else:
+                miss_label = f"belum punya {missing_count}/{len(chats)} grup"
+            idx = lb.size()
+            lb.insert(
+                tk.END,
+                f"{mask_phone(phone)} | {status} | {miss_label}",
+            )
+            try:
+                lb.itemconfig(idx, foreground=(warn_color if rem > 0 else ok_color))
+            except tk.TclError:
+                pass
+
+        result: dict[str, list[str] | None] = {"phones": None}
+
+        def _confirm() -> None:
+            picked_idxs = list(lb.curselection())
+            if not picked_idxs:
+                messagebox.showwarning(
+                    "Akun",
+                    "Pilih minimal satu akun (atau klik Cancel).",
+                    parent=win,
+                )
+                return
+            result["phones"] = [candidates[i] for i in picked_idxs]
+            win.destroy()
+
+        def _cancel() -> None:
+            result["phones"] = None
+            win.destroy()
+
+        def _all() -> None:
+            lb.selection_set(0, tk.END)
+
+        def _none() -> None:
+            lb.selection_clear(0, tk.END)
+
+        btns = ttk.Frame(win)
+        btns.pack(fill=tk.X, padx=12, pady=12)
+        ttk.Button(btns, text="Pilih Semua", command=_all).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Kosongkan", command=_none).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btns, text="Cancel", command=_cancel).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="OK", style="Accent.TButton", command=_confirm).pack(
+            side=tk.RIGHT, padx=(0, 6)
+        )
+
+        win.bind("<Escape>", lambda _e: _cancel())
+        win.bind("<Return>", lambda _e: _confirm())
+
+        self.root.wait_window(win)
+        return result["phones"]
+
+    def _account_manager_join_to_other(self) -> None:
+        """Joinkan grup terpilih (di tree) ke akun lain yang belum
+        punya grup itu. Workflow:
+
+        1. User pilih 1+ row di tree (boleh dari akun mana saja).
+        2. Sistem hitung untuk tiap akun login: grup mana yang belum
+           dia punya (berdasar cache yang sudah di-load).
+        3. Tampilkan picker hanya akun yang masih missing minimal 1
+           dari grup terpilih.
+        4. User pilih akun target → tiap akun join grup yang belum dia
+           punya. ``USER_ALREADY_PARTICIPANT`` di-anggap sukses (handle
+           kasus akun yang belum di-load cache-nya).
+        """
+        sel_iids = self.account_manager_tree.selection()
+        if not sel_iids:
+            messagebox.showinfo(
+                "Account Manager",
+                "Pilih row grup di tree dulu (boleh multi-row).",
+            )
+            return
+        selected_chats = [
+            self._account_manager_index_by_iid[i]
+            for i in sel_iids
+            if i in self._account_manager_index_by_iid
+        ]
+
+        # Filter ke grup yang punya username publik (yang bisa di-join
+        # via API tanpa invite link). Dedup by id supaya kalau user
+        # pilih row yang sama (akun beda) cuma dihitung sekali.
+        seen_ids: set[int] = set()
+        joinable_chats: list[dict] = []
+        skipped_titles: list[str] = []
+        for c in selected_chats:
+            cid = c.get("id")
+            try:
+                cid_int = int(cid) if cid is not None else 0
+            except (TypeError, ValueError):
+                cid_int = 0
+            if cid_int and cid_int in seen_ids:
+                continue
+            username = (c.get("username") or "").strip()
+            is_public = username.startswith("@") and len(username) > 1 and username != "(private)"
+            if is_public:
+                joinable_chats.append(c)
+                if cid_int:
+                    seen_ids.add(cid_int)
+            else:
+                skipped_titles.append(c.get("title", "") or str(cid))
+
+        if not joinable_chats:
+            messagebox.showwarning(
+                "Account Manager",
+                "Tidak ada grup yang punya username publik di selection.\n"
+                "Grup private tidak bisa di-join via API (butuh invite link manual).",
+            )
+            return
+
+        if skipped_titles:
+            preview = "\n".join(f"  - {t}" for t in skipped_titles[:5])
+            more = (
+                ""
+                if len(skipped_titles) <= 5
+                else f"\n  ... +{len(skipped_titles) - 5} lainnya"
+            )
+            if not messagebox.askyesno(
+                "Account Manager",
+                f"{len(skipped_titles)} grup di-skip (private tanpa username):\n"
+                f"{preview}{more}\n\n"
+                f"Lanjut dengan {len(joinable_chats)} grup yang punya username?",
+            ):
+                return
+
+        # Hitung missing per akun login.
+        all_sessions = self.manager.list_sessions()
+        if not all_sessions:
+            messagebox.showinfo(
+                "Account Manager", "Belum ada akun login."
+            )
+            return
+        missing_per_phone: dict[str, list[dict]] = {}
+        unknown_phones: set[str] = set()
+        for sess in all_sessions:
+            cached = self._account_manager_cache.get(sess.phone)
+            if cached is None:
+                # Belum di-load — anggap missing semua. USER_ALREADY_PARTICIPANT
+                # akan di-handle sebagai sukses saat join.
+                missing_per_phone[sess.phone] = list(joinable_chats)
+                unknown_phones.add(sess.phone)
+            else:
+                joined_ids = {int(g.get("id", 0)) for g in cached}
+                missing = [
+                    c for c in joinable_chats
+                    if int(c.get("id", 0)) not in joined_ids
+                ]
+                if missing:
+                    missing_per_phone[sess.phone] = missing
+
+        if not missing_per_phone:
+            messagebox.showinfo(
+                "Account Manager",
+                "Semua akun login sudah join semua grup terpilih.",
+            )
+            return
+
+        picked = self._pick_target_accounts_for_join(
+            chats=joinable_chats,
+            missing_per_phone=missing_per_phone,
+            unknown_phones=unknown_phones,
+        )
+        if not picked:
+            return
+
+        password = self.account_manager_password.get().strip()
+        if not password:
+            messagebox.showwarning("Input", "Encryption password wajib diisi")
+            return
+
+        # Final ops grouped per akun.
+        ops_by_phone: dict[str, list[dict]] = {
+            p: missing_per_phone[p] for p in picked if missing_per_phone.get(p)
+        }
+        total_ops = sum(len(v) for v in ops_by_phone.values())
+        if total_ops == 0:
+            messagebox.showinfo(
+                "Account Manager",
+                "Tidak ada operasi yang perlu dijalankan.",
+            )
+            return
+
+        # Delay antar-join (hardcode 5-15s default, mirip Grup Scrapper).
+        delay_min, delay_max = 5.0, 15.0
+
+        if not messagebox.askyesno(
+            "Konfirmasi Join",
+            f"Akan join {total_ops} operasi ({len(ops_by_phone)} akun × beberapa grup) "
+            f"dengan delay {delay_min:.0f}-{delay_max:.0f}s antar-join.\n\nLanjutkan?",
+        ):
+            return
+
+        self._log(
+            f"[Account Manager] Joinkan: {len(joinable_chats)} grup → "
+            f"{len(ops_by_phone)} akun ({total_ops} ops)."
+        )
+
+        async def _job():
+            total_ok = 0
+            total_skipped = 0
+            total_fail = 0
+            for phone, chats_to_join in ops_by_phone.items():
+                self._post(
+                    lambda p=phone, n=len(chats_to_join): self._log(
+                        f"[Account Manager] Joining {n} grup via {mask_phone(p)}..."
+                    )
+                )
+                try:
+                    app = await self.manager.build_client(phone, password)
+                    await app.connect()
+                except Exception as exc:
+                    self._post(
+                        lambda p=phone, e=exc: self._log(
+                            f"[Account Manager] Gagal connect {mask_phone(p)}: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    )
+                    total_fail += len(chats_to_join)
+                    continue
+
+                newly_joined: list[dict] = []
+                try:
+                    for ci, ch in enumerate(chats_to_join):
+                        username = (ch.get("username") or "").strip()
+                        title = ch.get("title", "")
+                        if not username.startswith("@"):
+                            total_fail += 1
+                            continue
+
+                        try:
+                            try:
+                                await app.join_chat(username)
+                            except FloodWait as fw:
+                                wait = int(fw.value)
+                                if wait >= 3600:
+                                    self.manager.set_cooldown(phone=phone, seconds=wait)
+                                    self._post(
+                                        lambda p=phone, w=wait: self._log(
+                                            f"[Account Manager] {mask_phone(p)} kena FloodWait "
+                                            f"{w}s; cooldown dipasang, skip akun ini."
+                                        )
+                                    )
+                                    total_fail += len(chats_to_join) - ci
+                                    break
+                                self._post(
+                                    lambda w=wait: self._log(
+                                        f"[Account Manager] FloodWait {w}s, retry..."
+                                    )
+                                )
+                                await asyncio.sleep(wait + 2)
+                                await app.join_chat(username)
+
+                            total_ok += 1
+                            newly_joined.append(dict(ch, phone=phone))
+                            self._post(
+                                lambda t=title, p=phone: self._log(
+                                    f"[Account Manager] Joined {t} via {mask_phone(p)}"
+                                )
+                            )
+                        except PeerFlood:
+                            self.manager.set_cooldown(phone=phone, seconds=24 * 3600)
+                            self._post(
+                                lambda p=phone: self._log(
+                                    f"[Account Manager] {mask_phone(p)} PEER_FLOOD; cooldown 24h, skip akun."
+                                )
+                            )
+                            total_fail += len(chats_to_join) - ci
+                            break
+                        except Exception as exc:
+                            err = str(exc).upper()
+                            if (
+                                "USER_ALREADY_PARTICIPANT" in err
+                                or "ALREADY_PARTICIPANT" in err
+                            ):
+                                total_skipped += 1
+                                newly_joined.append(dict(ch, phone=phone))
+                                self._post(
+                                    lambda t=title, p=phone: self._log(
+                                        f"[Account Manager] Sudah join: {t} via {mask_phone(p)}"
+                                    )
+                                )
+                            else:
+                                total_fail += 1
+                                self._post(
+                                    lambda t=title, p=phone, e=exc: self._log(
+                                        f"[Account Manager] Gagal join {t} via {mask_phone(p)}: "
+                                        f"{type(e).__name__}: {e}"
+                                    )
+                                )
+
+                        # Delay antar-join, kecuali di iterasi terakhir.
+                        if ci < len(chats_to_join) - 1:
+                            d = random_delay(delay_min, delay_max)
+                            await asyncio.sleep(d)
+                finally:
+                    try:
+                        await app.disconnect()
+                    except Exception:
+                        pass
+
+                # Update cache: tambah grup baru yang berhasil di-join
+                # (atau sudah di sana) supaya tidak ditawarkan lagi di
+                # picker berikutnya.
+                cached = list(self._account_manager_cache.get(phone, []))
+                existing_ids = {int(g.get("id", 0)) for g in cached}
+                for new_g in newly_joined:
+                    try:
+                        gid = int(new_g.get("id", 0))
+                    except (TypeError, ValueError):
+                        gid = 0
+                    if gid and gid not in existing_ids:
+                        cached.append(new_g)
+                        existing_ids.add(gid)
+                self._account_manager_cache[phone] = cached
+
+            self._post(self._on_account_manager_account_pick)
+            summary = (
+                f"Join 'ke Akun Lain' selesai: ok={total_ok}, "
+                f"sudah-ada={total_skipped}, gagal={total_fail}"
+            )
+            self._post(lambda s=summary: self._log(f"[Account Manager] {s}"))
+            self._post(lambda s=summary: messagebox.showinfo("Join Result", s))
+
+        self._run_async_job(_job())
 
     def _test_sessions(self) -> None:
         password = self.sessions_password.get().strip()
