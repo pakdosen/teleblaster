@@ -509,6 +509,7 @@ class TelegramScraperGUI:
         add_tab, self.tab_add = self._create_scrollable_tab(notebook)
         broadcast_tab, self.tab_broadcast = self._create_scrollable_tab(notebook)
         sessions_tab, self.tab_sessions = self._create_scrollable_tab(notebook)
+        account_manager_tab, self.tab_account_manager = self._create_scrollable_tab(notebook)
         about_tab, self.tab_about = self._create_scrollable_tab(notebook)
 
         notebook.add(login_tab, text="Login")
@@ -517,6 +518,7 @@ class TelegramScraperGUI:
         notebook.add(add_tab, text="Members Adder")
         notebook.add(broadcast_tab, text="Broadcast")
         notebook.add(sessions_tab, text="Sessions")
+        notebook.add(account_manager_tab, text="Account Manager")
         notebook.add(about_tab, text="About")
 
         self._build_login_tab()
@@ -525,6 +527,7 @@ class TelegramScraperGUI:
         self._build_add_tab()
         self._build_broadcast_tab()
         self._build_sessions_tab()
+        self._build_account_manager_tab()
         self._build_about_tab()
         self._reload_broadcast_members()
 
@@ -1087,6 +1090,126 @@ class TelegramScraperGUI:
 
         frm.grid_rowconfigure(1, weight=1)
         frm.grid_columnconfigure(0, weight=1)
+
+    def _build_account_manager_tab(self) -> None:
+        """Tab "Account Manager".
+
+        Tampilan per-akun dari grup/channel yang sudah di-join akun
+        tersebut, plus tombol "Left Selected"/"Left All" untuk leave
+        grup yang dipilih. Dipakai untuk management akun cepat tanpa
+        harus buka Telegram per akun.
+
+        Layout:
+          row 0: judul + password
+          row 1: tombol Refresh Selected
+          row 2 (kiri): listbox daftar akun login
+          row 2 (kanan): treeview grup/channel yang sudah di-join +
+                        scrollbar
+          row 3 (kanan): tombol Left Selected / Left All / Export CSV
+        """
+        frm = self.tab_account_manager
+
+        ttk.Label(
+            frm, text="Account Manager", font=("Segoe UI", 11, "bold")
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        ttk.Label(frm, text="Encryption Password").grid(row=0, column=1, sticky="e", padx=(8, 4))
+        self.account_manager_password = ttk.Entry(frm, show="*", width=28)
+        self.account_manager_password.grid(row=0, column=2, sticky="w", padx=(0, 8))
+
+        ttk.Button(
+            frm,
+            text="Load Groups dari Akun Terpilih",
+            style="Accent.TButton",
+            command=self._account_manager_load_selected,
+        ).grid(row=0, column=3, sticky="w", padx=(0, 6))
+
+        # Kiri: listbox akun.
+        ttk.Label(frm, text="Akun login:").grid(row=1, column=0, sticky="w", pady=(4, 2))
+        self._account_manager_phones: list[str] = []
+        self.account_manager_accounts = tk.Listbox(
+            frm, height=18, width=32, font=("Consolas", 10), exportselection=False
+        )
+        self.account_manager_accounts.grid(row=2, column=0, sticky="nsew", padx=(0, 8))
+        self._style_listbox_widget(self.account_manager_accounts)
+        self.account_manager_accounts.bind(
+            "<<ListboxSelect>>", self._on_account_manager_account_pick
+        )
+
+        ttk.Button(
+            frm,
+            text="Refresh Daftar Akun",
+            command=self._account_manager_refresh_accounts,
+        ).grid(row=3, column=0, sticky="ew", pady=(8, 0), padx=(0, 8))
+
+        # Kanan: treeview grup/channel yang sudah di-join akun terpilih.
+        ttk.Label(
+            frm, text="Grup/Channel yang sudah di-join:"
+        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=(4, 2))
+
+        tree_wrap = ttk.Frame(frm)
+        tree_wrap.grid(row=2, column=1, columnspan=3, sticky="nsew")
+
+        self.account_manager_tree = ttk.Treeview(
+            tree_wrap,
+            columns=("title", "type", "username", "members", "id"),
+            show="headings",
+            height=18,
+            selectmode="extended",
+        )
+        self.account_manager_tree.heading("title", text="Judul")
+        self.account_manager_tree.heading("type", text="Tipe")
+        self.account_manager_tree.heading("username", text="Username/Link")
+        self.account_manager_tree.heading("members", text="Members")
+        self.account_manager_tree.heading("id", text="ID")
+        self.account_manager_tree.column("title", width=320, anchor="w")
+        self.account_manager_tree.column("type", width=110, anchor="center")
+        self.account_manager_tree.column("username", width=200, anchor="w")
+        self.account_manager_tree.column("members", width=90, anchor="e")
+        self.account_manager_tree.column("id", width=120, anchor="e")
+
+        v_scroll = ttk.Scrollbar(
+            tree_wrap, orient=tk.VERTICAL, command=self.account_manager_tree.yview
+        )
+        self.account_manager_tree.configure(yscrollcommand=v_scroll.set)
+        self.account_manager_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # `_account_manager_index_by_iid` map iid Treeview → dict info chat
+        # untuk pengambilan id saat user pilih row & klik Left.
+        self._account_manager_index_by_iid: dict[str, dict] = {}
+        # `_account_manager_cache` simpan list grup per phone supaya
+        # switch akun tidak fetch ulang (sampai user klik refresh).
+        self._account_manager_cache: dict[str, list[dict]] = {}
+        # Phone yang terakhir dipilih (untuk leave_selected supaya tahu
+        # akun mana yang dipakai untuk leave_chat).
+        self._account_manager_current_phone: str | None = None
+
+        actions = ttk.Frame(frm)
+        actions.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text="Left Selected",
+            style="Danger.TButton",
+            command=self._account_manager_leave_selected,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="Left All",
+            style="Danger.TButton",
+            command=self._account_manager_leave_all,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="Export CSV",
+            command=self._account_manager_export_csv,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        frm.grid_rowconfigure(2, weight=1)
+        frm.grid_columnconfigure(1, weight=1)
+
+        # Seed list akun.
+        self._account_manager_refresh_accounts()
 
     def _build_about_tab(self) -> None:
         about_logo = self._load_logo(160)
@@ -2827,6 +2950,33 @@ class TelegramScraperGUI:
 
         self._run_async_job(_job())
 
+    @staticmethod
+    def _format_join_status(*, ok: int, fail: int, total: int) -> str:
+        """Format kolom Status di Grup Scrapper saat multi-akun join.
+
+        ``total`` = jumlah akun yang ikut join batch. ``ok``/``fail``
+        = berapa akun yang sukses/gagal join target ini.
+
+        Single-akun → tetap "Joined" / "Failed" (kompatibel dengan
+        tampilan lama). Multi-akun → tampilkan rasio "Joined N/M",
+        "Joined N/M, gagal G", atau "Failed (N/M)".
+        """
+        if total <= 1:
+            if ok > 0:
+                return "Joined"
+            if fail > 0:
+                return "Failed"
+            return "Pending"
+        if ok + fail == 0:
+            return "Pending"
+        if ok == total:
+            return f"Joined ({ok}/{total})"
+        if ok > 0 and fail > 0:
+            return f"Joined {ok}/{total}, gagal {fail}"
+        if ok > 0:
+            return f"Joined {ok}/{total} (sebagian)"
+        return f"Failed ({fail}/{total})"
+
     def _run_grup_scrapper_join(self, only_selected: bool) -> None:
         password = self.grup_scrapper_password.get().strip()
         if not password:
@@ -2869,39 +3019,73 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Delay tidak valid. min >= 0 dan min <= max")
             return
 
-        account_phone = self._parse_account_choice(self.grup_scrapper_account.get()) if hasattr(self, "grup_scrapper_account") else None
-        account_label = mask_phone(account_phone) if account_phone else "Auto (rotasi semua akun)"
+        # Multi-account picker: user bisa centang banyak akun supaya
+        # tiap akun ikut join semua target. Preselect dari combobox
+        # `grup_scrapper_account` kalau user sudah pilih akun spesifik.
+        default_phone = (
+            self._parse_account_choice(self.grup_scrapper_account.get())
+            if hasattr(self, "grup_scrapper_account")
+            else None
+        )
+        picked_phones = self._pick_join_accounts(
+            title="Pilih akun yang akan join",
+            default_phone=default_phone,
+        )
+        if not picked_phones:
+            return
+
+        # Skip akun yang cooldown.
+        cooled_down = [
+            p for p in picked_phones
+            if self.manager.get_cooldown_remaining(p) > 0
+        ]
+        active_phones = [p for p in picked_phones if p not in cooled_down]
+        if not active_phones:
+            messagebox.showwarning(
+                "Akun",
+                "Semua akun yang dipilih sedang cooldown. Pilih akun lain atau tunggu.",
+            )
+            return
+        if cooled_down:
+            cool_str = ", ".join(mask_phone(p) for p in cooled_down)
+            if not messagebox.askyesno(
+                "Akun Cooldown",
+                (
+                    f"Akun berikut sedang cooldown dan akan di-skip:\n  {cool_str}\n\n"
+                    f"Lanjut dengan {len(active_phones)} akun lainnya?"
+                ),
+            ):
+                return
+
+        n_accounts = len(active_phones)
+        accounts_label = ", ".join(mask_phone(p) for p in active_phones)
+        total_ops = n_accounts * len(targets)
 
         if not messagebox.askyesno(
             "Konfirmasi Join",
             (
                 f"Akan join {len(targets)} grup/channel dengan delay random "
-                f"{delay_min:.1f}-{delay_max:.1f} detik menggunakan akun: {account_label}.\n\nLanjutkan?"
+                f"{delay_min:.1f}-{delay_max:.1f} detik.\n\n"
+                f"Akun ({n_accounts}): {accounts_label}\n"
+                f"Total operasi: {total_ops} join.\n\nLanjutkan?"
             ),
         ):
             return
 
-        if account_phone:
-            self._log(
-                f"[Grup Scrapper] Join akan menggunakan akun terpilih: {mask_phone(account_phone)} (rotasi dimatikan)"
-            )
+        # Reset cumulative state untuk setiap target di batch ini.
+        for t in targets:
+            t["_join_ok_count"] = 0
+            t["_join_fail_count"] = 0
+
+        self._log(
+            f"[Grup Scrapper] Join multi-akun: {n_accounts} akun × {len(targets)} grup "
+            f"= {total_ops} operasi"
+        )
 
         async def _job():
-            joined_count = 0
-            failed_count = 0
-            total = len(targets)
-
-            # Build & connect client SEKALI di awal batch (per akun) untuk hindari
-            # reconnect overhead 3-10 detik per iterasi. Cache by phone agar mode Auto
-            # tidak reconnect untuk akun yang sama berturut-turut.
-            clients: dict[str, Client] = {}
-
-            async def _get_client(phone: str) -> Client:
-                if phone not in clients:
-                    app = await self.manager.build_client(phone, password)
-                    await app.connect()
-                    clients[phone] = app
-                return clients[phone]
+            op_idx = 0
+            total_ok = 0
+            total_fail = 0
 
             async def _join_once(app: Client, link: str) -> None:
                 try:
@@ -2912,45 +3096,59 @@ class TelegramScraperGUI:
                         return
                     raise
 
-            try:
-                # Pre-connect single account agar latency join pertama juga rendah.
-                if account_phone:
-                    try:
-                        await _get_client(account_phone)
-                    except Exception as exc:
-                        self._post(
-                            lambda e=exc: self._log(
-                                f"[Grup Scrapper] Gagal connect ke akun: {type(e).__name__}: {e}"
-                            )
+            def _bump_status(item: dict) -> None:
+                item["status"] = self._format_join_status(
+                    ok=int(item.get("_join_ok_count", 0)),
+                    fail=int(item.get("_join_fail_count", 0)),
+                    total=n_accounts,
+                )
+                self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
+
+            for ai, phone in enumerate(active_phones):
+                self._post(
+                    lambda p=phone, ai=ai, total=n_accounts: self._log(
+                        f"[Grup Scrapper] Akun ({ai + 1}/{total}) {mask_phone(p)}: connecting..."
+                    )
+                )
+                try:
+                    app = await self.manager.build_client(phone, password)
+                    await app.connect()
+                except Exception as exc:
+                    self._post(
+                        lambda p=phone, e=exc: self._log(
+                            f"[Grup Scrapper] Akun {mask_phone(p)} connect gagal: "
+                            f"{type(e).__name__}: {e}"
                         )
-                        return
+                    )
+                    for t in targets:
+                        t["_join_fail_count"] = int(t.get("_join_fail_count", 0)) + 1
+                        total_fail += 1
+                        _bump_status(t)
+                    continue
 
-                for idx, item in enumerate(targets):
-                    username = (item.get("username") or "").strip()
-                    title = item.get("title", "")
-                    if not username:
-                        failed_count += 1
-                        item["status"] = "Skip: tanpa username"
-                        self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
-                        continue
+                try:
+                    for ti, item in enumerate(targets):
+                        op_idx += 1
+                        username = (item.get("username") or "").strip()
+                        title = item.get("title", "")
+                        if not username:
+                            item["_join_fail_count"] = int(item.get("_join_fail_count", 0)) + 1
+                            total_fail += 1
+                            _bump_status(item)
+                            continue
 
-                    link = f"@{username}"
-                    used_phone: str | None = None
-                    abort_batch = False
-
-                    try:
-                        if account_phone:
-                            # Single-account mode: 1 connection untuk seluruh batch.
-                            app = await _get_client(account_phone)
+                        link = f"@{username}"
+                        abort_account = False
+                        try:
                             try:
                                 await _join_once(app, link)
                             except FloodWait as fw:
                                 wait = int(fw.value)
                                 if wait >= 3600:
-                                    self.manager.set_cooldown(phone=account_phone, seconds=wait)
+                                    self.manager.set_cooldown(phone=phone, seconds=wait)
                                     raise RuntimeError(
-                                        f"Akun {mask_phone(account_phone)} kena FloodWait {wait}s; "
-                                        "cooldown dipasang. Pilih akun lain di dropdown atau tunggu."
+                                        f"Akun {mask_phone(phone)} kena FloodWait {wait}s; "
+                                        "skip akun ini untuk sisa batch."
                                     ) from fw
                                 self._post(
                                     lambda w=wait: self._log(
@@ -2959,66 +3157,71 @@ class TelegramScraperGUI:
                                 )
                                 await asyncio.sleep(wait + 2)
                                 await _join_once(app, link)
-                            used_phone = account_phone
-                        else:
-                            # Auto mode: rotasi via execute_with_rotation (tetap reconnect
-                            # per-iter karena akun bisa berbeda; dedup connection untuk akun
-                            # yang sama tidak trivial dengan rotation policy yang ada).
-                            async def _op(app, _phone: str, _link=link):
-                                await _join_once(app, _link)
-                                return True
 
-                            _, used_phone = await execute_with_rotation(
-                                self.manager, password, _op
+                            item["_join_ok_count"] = int(item.get("_join_ok_count", 0)) + 1
+                            item["joined"] = True  # min. 1 akun sukses → dianggap joined
+                            total_ok += 1
+                            _bump_status(item)
+                            self._post(
+                                lambda t=title, p=phone, n=op_idx, tot=total_ops: self._log(
+                                    f"[Grup Scrapper] Joined {t} via {mask_phone(p)} "
+                                    f"({n}/{tot})"
+                                )
                             )
-
-                        joined_count += 1
-                        item["joined"] = True
-                        item["status"] = "Joined"
-                        self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
-                        self._post(
-                            lambda t=title, p=used_phone, n=idx + 1, tot=total: self._log(
-                                f"[Grup Scrapper] Joined {t} via {p} ({n}/{tot})"
+                        except Exception as exc:
+                            item["_join_fail_count"] = int(item.get("_join_fail_count", 0)) + 1
+                            total_fail += 1
+                            _bump_status(item)
+                            err_text = f"{type(exc).__name__}: {exc}"
+                            self._post(
+                                lambda t=title, p=phone, e=err_text: self._log(
+                                    f"[Grup Scrapper] Join {t} via {mask_phone(p)} gagal: {e}"
+                                )
                             )
-                        )
-                    except Exception as exc:
-                        failed_count += 1
-                        err_text = f"{type(exc).__name__}: {exc}"
-                        item["status"] = f"Failed: {err_text[:60]}"
-                        self._post(lambda it=item: self._refresh_grup_scrapper_row(it))
-                        self._post(
-                            lambda t=title, e=err_text: self._log(
-                                f"[Grup Scrapper] Join {t} gagal: {e}"
+                            if "cooldown" in err_text.lower() or "FloodWait" in err_text:
+                                abort_account = True
+
+                        if abort_account:
+                            self._post(
+                                lambda p=phone: self._log(
+                                    f"[Grup Scrapper] Akun {mask_phone(p)} skip sisa target (cooldown)."
+                                )
                             )
-                        )
-                        # Cooldown akun-spesifik = batch tidak bisa lanjut.
-                        if account_phone and "cooldown" in err_text.lower():
-                            abort_batch = True
+                            for rem_item in targets[ti + 1:]:
+                                rem_item["_join_fail_count"] = int(rem_item.get("_join_fail_count", 0)) + 1
+                                total_fail += 1
+                                _bump_status(rem_item)
+                            break
 
-                    if abort_batch:
-                        break
-
-                    if idx < total - 1:
-                        d = random_delay(delay_min, delay_max)
-                        self._post(
-                            lambda d=d: self._log(
-                                f"[Grup Scrapper] Sleep {d:.1f}s sebelum join berikutnya"
+                        if ti < len(targets) - 1:
+                            d = random_delay(delay_min, delay_max)
+                            self._post(
+                                lambda d=d: self._log(
+                                    f"[Grup Scrapper] Sleep {d:.1f}s sebelum join berikutnya"
+                                )
                             )
-                        )
-                        await asyncio.sleep(d)
-
-                summary = (
-                    f"Grup Scrapper join selesai: ok={joined_count}, "
-                    f"gagal={failed_count}, total={total}"
-                )
-                self._post(lambda s=summary: self._log(s))
-                self._post(lambda s=summary: messagebox.showinfo("Join Result", s))
-            finally:
-                for app in clients.values():
+                            await asyncio.sleep(d)
+                finally:
                     try:
                         await app.disconnect()
                     except Exception:
                         pass
+
+                if ai < n_accounts - 1:
+                    d = random_delay(delay_min, delay_max)
+                    self._post(
+                        lambda d=d: self._log(
+                            f"[Grup Scrapper] Sleep {d:.1f}s sebelum akun berikutnya"
+                        )
+                    )
+                    await asyncio.sleep(d)
+
+            summary = (
+                f"Grup Scrapper join selesai: ok={total_ok}, gagal={total_fail}, "
+                f"total ops={total_ops}, akun={n_accounts}, target={len(targets)}"
+            )
+            self._post(lambda s=summary: self._log(s))
+            self._post(lambda s=summary: messagebox.showinfo("Join Result", s))
 
         self._run_async_job(_job())
 
@@ -4330,6 +4533,413 @@ class TelegramScraperGUI:
             cb.configure(values=choices)
             if current not in choices:
                 cb.set(self.AUTO_ACCOUNT_LABEL)
+
+        # Sync listbox akun di tab Account Manager juga.
+        if hasattr(self, "account_manager_accounts"):
+            try:
+                self._account_manager_refresh_accounts()
+            except Exception:
+                pass
+
+    # =========================================================================
+    # Multi-account picker dialog (dipakai oleh Grup Scrapper join).
+    # =========================================================================
+    def _pick_join_accounts(
+        self, *, title: str = "Pilih akun untuk join", default_phone: str | None = None
+    ) -> list[str] | None:
+        """Modal dialog untuk multi-select akun login.
+
+        Return list phone yang dipilih user, atau ``None`` kalau dialog
+        di-cancel. Saat user pilih "Auto" (kosongkan semua → semua akun
+        masuk), return berisi SEMUA akun login (urut sesuai listing).
+
+        ``default_phone``: kalau diset & ada di list, akan ter-preselect.
+        Kalau tidak diset, semua akun akan ter-preselect (semua akun
+        akan join).
+        """
+        sessions = self.manager.list_sessions()
+        if not sessions:
+            messagebox.showinfo("Akun", "Belum ada akun login. Login dulu lewat tab Login.")
+            return None
+
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.transient(self.root)
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+        win.configure(bg=self.colors.get("bg", "#0b0f17"))
+
+        ttk.Label(
+            win,
+            text="Centang akun yang akan ikut join (Ctrl/Shift untuk multi-select):",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        lb = tk.Listbox(
+            win,
+            height=min(16, max(4, len(sessions))),
+            width=48,
+            font=("Consolas", 10),
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+        )
+        lb.pack(fill=tk.BOTH, expand=True, padx=12)
+        self._style_listbox_widget(lb)
+
+        ok_color = self.colors.get("ok", "#34d399")
+        warn_color = self.colors.get("warn", "#f5b454")
+        for sess in sessions:
+            rem = int(self.manager.get_cooldown_remaining(sess.phone))
+            status = self._format_cooldown(rem)
+            idx = lb.size()
+            lb.insert(tk.END, f"{sess.phone} | {mask_phone(sess.phone)} | {status}")
+            try:
+                lb.itemconfig(idx, foreground=(warn_color if rem > 0 else ok_color))
+            except tk.TclError:
+                pass
+
+        # Preselect: kalau default_phone diset → hanya itu; kalau tidak
+        # → semua akun (mode Auto = semua akun ikut).
+        if default_phone:
+            for i, sess in enumerate(sessions):
+                if sess.phone == default_phone:
+                    lb.selection_set(i)
+                    break
+        else:
+            lb.selection_set(0, tk.END)
+
+        result: dict[str, list[str] | None] = {"phones": None}
+
+        def _confirm() -> None:
+            picked_idxs = list(lb.curselection())
+            if not picked_idxs:
+                messagebox.showwarning(
+                    "Akun", "Pilih minimal satu akun (atau klik Cancel).",
+                    parent=win,
+                )
+                return
+            result["phones"] = [sessions[i].phone for i in picked_idxs]
+            win.destroy()
+
+        def _cancel() -> None:
+            result["phones"] = None
+            win.destroy()
+
+        def _all() -> None:
+            lb.selection_set(0, tk.END)
+
+        def _none() -> None:
+            lb.selection_clear(0, tk.END)
+
+        btns = ttk.Frame(win)
+        btns.pack(fill=tk.X, padx=12, pady=12)
+        ttk.Button(btns, text="Pilih Semua", command=_all).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Kosongkan", command=_none).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btns, text="Cancel", command=_cancel).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="OK", style="Accent.TButton", command=_confirm).pack(
+            side=tk.RIGHT, padx=(0, 6)
+        )
+
+        win.bind("<Escape>", lambda _e: _cancel())
+        win.bind("<Return>", lambda _e: _confirm())
+
+        # Tunggu user close dialog.
+        self.root.wait_window(win)
+        return result["phones"]
+
+    # =========================================================================
+    # Account Manager tab: list grup yang sudah di-join per akun + leave.
+    # =========================================================================
+    def _account_manager_refresh_accounts(self) -> None:
+        """Refresh listbox akun di tab Account Manager dari sessions."""
+        if not hasattr(self, "account_manager_accounts"):
+            return
+        sessions = self.manager.list_sessions()
+        self.account_manager_accounts.delete(0, tk.END)
+        self._account_manager_phones = []
+        ok_color = self.colors.get("ok", "#34d399")
+        warn_color = self.colors.get("warn", "#f5b454")
+        for sess in sessions:
+            rem = int(self.manager.get_cooldown_remaining(sess.phone))
+            status = self._format_cooldown(rem)
+            idx = self.account_manager_accounts.size()
+            self.account_manager_accounts.insert(
+                tk.END, f"{mask_phone(sess.phone)} | {status}"
+            )
+            self._account_manager_phones.append(sess.phone)
+            try:
+                self.account_manager_accounts.itemconfig(
+                    idx, foreground=(warn_color if rem > 0 else ok_color)
+                )
+            except tk.TclError:
+                pass
+
+    def _on_account_manager_account_pick(self, _event=None) -> None:
+        """Saat user klik akun di listbox: kalau ada cache, langsung
+        render; kalau belum, biarkan kosong (user klik Load Groups
+        secara eksplisit dengan password)."""
+        sel = self.account_manager_accounts.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._account_manager_phones):
+            return
+        phone = self._account_manager_phones[idx]
+        self._account_manager_current_phone = phone
+        cached = self._account_manager_cache.get(phone)
+        if cached is not None:
+            self._account_manager_render_groups(cached)
+        else:
+            # Belum pernah load — kosongkan tree dan biarkan user
+            # klik "Load Groups dari Akun Terpilih".
+            self._account_manager_render_groups([])
+
+    def _account_manager_render_groups(self, groups: list[dict]) -> None:
+        for iid in self.account_manager_tree.get_children():
+            self.account_manager_tree.delete(iid)
+        self._account_manager_index_by_iid = {}
+        for g in groups:
+            iid = self.account_manager_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    g.get("title", ""),
+                    g.get("type", ""),
+                    g.get("username", ""),
+                    g.get("members", ""),
+                    g.get("id", ""),
+                ),
+            )
+            self._account_manager_index_by_iid[iid] = g
+
+    def _account_manager_load_selected(self) -> None:
+        """Fetch list grup/channel yang sudah di-join akun terpilih,
+        lalu render ke treeview kanan.
+        """
+        sel = self.account_manager_accounts.curselection()
+        if not sel:
+            messagebox.showinfo(
+                "Account Manager",
+                "Pilih akun di list kiri dulu (klik baris akun).",
+            )
+            return
+        idx = sel[0]
+        if idx >= len(self._account_manager_phones):
+            return
+        phone = self._account_manager_phones[idx]
+        password = self.account_manager_password.get().strip()
+        if not password:
+            messagebox.showwarning("Input", "Encryption password wajib diisi")
+            return
+
+        self._account_manager_current_phone = phone
+        self._log(
+            f"[Account Manager] Loading groups dari {mask_phone(phone)}... (tunggu beberapa detik)"
+        )
+
+        async def _job():
+            groups: list[dict] = []
+            try:
+                app = await self.manager.build_client(phone, password)
+                await app.connect()
+                try:
+                    async for dialog in app.get_dialogs():
+                        chat = dialog.chat
+                        if not chat or chat.type not in {
+                            ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL,
+                        }:
+                            continue
+                        type_label = "Group"
+                        if chat.type == ChatType.SUPERGROUP:
+                            type_label = "Supergroup"
+                        elif chat.type == ChatType.CHANNEL:
+                            type_label = "Channel"
+                        title = chat.title or str(chat.id)
+                        username = f"@{chat.username}" if chat.username else "(private)"
+                        members = getattr(chat, "members_count", None)
+                        groups.append({
+                            "id": chat.id,
+                            "title": title,
+                            "type": type_label,
+                            "username": username,
+                            "members": members if members is not None else "-",
+                        })
+                finally:
+                    try:
+                        await app.disconnect()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                self._post(
+                    lambda e=exc: self._log(
+                        f"[Account Manager] Gagal load groups: {type(e).__name__}: {e}"
+                    )
+                )
+                self._post(
+                    lambda e=exc: messagebox.showerror(
+                        "Account Manager",
+                        f"Gagal load groups dari {mask_phone(phone)}:\n{type(e).__name__}: {e}",
+                    )
+                )
+                return
+
+            self._account_manager_cache[phone] = groups
+            self._post(lambda g=groups: self._account_manager_render_groups(g))
+            self._post(
+                lambda n=len(groups): self._log(
+                    f"[Account Manager] {mask_phone(phone)}: {n} grup/channel ter-load."
+                )
+            )
+
+        self._run_async_job(_job())
+
+    def _account_manager_leave_chats(self, chats: list[dict]) -> None:
+        """Helper: leave list chats untuk akun terpilih (current_phone).
+
+        ``chats``: list dict dengan key 'id' dan 'title'.
+        """
+        phone = self._account_manager_current_phone
+        if not phone:
+            messagebox.showinfo(
+                "Account Manager", "Pilih akun di list kiri dulu."
+            )
+            return
+        if not chats:
+            messagebox.showinfo("Account Manager", "Tidak ada grup yang dipilih.")
+            return
+
+        password = self.account_manager_password.get().strip()
+        if not password:
+            messagebox.showwarning("Input", "Encryption password wajib diisi")
+            return
+
+        if not messagebox.askyesno(
+            "Konfirmasi Left",
+            (
+                f"Akan keluar dari {len(chats)} grup/channel pakai akun "
+                f"{mask_phone(phone)}.\n\nLanjutkan?"
+            ),
+        ):
+            return
+
+        async def _job():
+            ok = 0
+            failed = 0
+            left_ids: set[int] = set()
+            try:
+                app = await self.manager.build_client(phone, password)
+                await app.connect()
+                try:
+                    for ch in chats:
+                        cid = ch.get("id")
+                        title = ch.get("title", "")
+                        if cid is None:
+                            failed += 1
+                            continue
+                        try:
+                            await app.leave_chat(cid)
+                            ok += 1
+                            left_ids.add(int(cid))
+                            self._post(
+                                lambda t=title: self._log(
+                                    f"[Account Manager] Left: {t}"
+                                )
+                            )
+                        except Exception as exc:
+                            failed += 1
+                            self._post(
+                                lambda t=title, e=exc: self._log(
+                                    f"[Account Manager] Gagal left {t}: {type(e).__name__}: {e}"
+                                )
+                            )
+                        await asyncio.sleep(1.0)
+                finally:
+                    try:
+                        await app.disconnect()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                self._post(
+                    lambda e=exc: self._log(
+                        f"[Account Manager] Connect error: {type(e).__name__}: {e}"
+                    )
+                )
+                self._post(
+                    lambda e=exc: messagebox.showerror(
+                        "Account Manager",
+                        f"Connect gagal: {type(e).__name__}: {e}",
+                    )
+                )
+                return
+
+            # Update cache: buang grup yang sudah di-left.
+            cached = self._account_manager_cache.get(phone, [])
+            new_cache = [g for g in cached if int(g.get("id", 0)) not in left_ids]
+            self._account_manager_cache[phone] = new_cache
+            self._post(lambda g=new_cache: self._account_manager_render_groups(g))
+            summary = (
+                f"Left selesai untuk {mask_phone(phone)}: ok={ok}, gagal={failed}"
+            )
+            self._post(lambda s=summary: self._log(f"[Account Manager] {s}"))
+            self._post(lambda s=summary: messagebox.showinfo("Left Result", s))
+
+        self._run_async_job(_job())
+
+    def _account_manager_leave_selected(self) -> None:
+        sel_iids = self.account_manager_tree.selection()
+        if not sel_iids:
+            messagebox.showinfo(
+                "Account Manager", "Pilih row grup yang akan di-left."
+            )
+            return
+        chats = [
+            self._account_manager_index_by_iid[i]
+            for i in sel_iids
+            if i in self._account_manager_index_by_iid
+        ]
+        self._account_manager_leave_chats(chats)
+
+    def _account_manager_leave_all(self) -> None:
+        chats = list(self._account_manager_index_by_iid.values())
+        if not chats:
+            messagebox.showinfo("Account Manager", "Daftar grup kosong.")
+            return
+        self._account_manager_leave_chats(chats)
+
+    def _account_manager_export_csv(self) -> None:
+        chats = list(self._account_manager_index_by_iid.values())
+        if not chats:
+            messagebox.showinfo("Account Manager", "Daftar grup kosong, tidak ada yang diekspor.")
+            return
+        phone = self._account_manager_current_phone or "unknown"
+        path = filedialog.asksaveasfilename(
+            title="Export Account Manager",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("All files", "*.*")],
+            initialfile=f"account_groups_{phone.replace('+', '')}.csv",
+        )
+        if not path:
+            return
+        import csv as _csv
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                writer = _csv.DictWriter(
+                    f, fieldnames=["Title", "Type", "Username", "Members", "ID"]
+                )
+                writer.writeheader()
+                for c in chats:
+                    writer.writerow({
+                        "Title": c.get("title", ""),
+                        "Type": c.get("type", ""),
+                        "Username": c.get("username", ""),
+                        "Members": c.get("members", ""),
+                        "ID": c.get("id", ""),
+                    })
+            self._log(f"[Account Manager] Export ke {path} ({len(chats)} row)")
+            messagebox.showinfo("Export", f"Berhasil disimpan ke:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Export", f"Gagal simpan CSV: {exc}")
 
     def _test_sessions(self) -> None:
         password = self.sessions_password.get().strip()
