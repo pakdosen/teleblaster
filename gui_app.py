@@ -1124,11 +1124,19 @@ class TelegramScraperGUI:
             command=self._account_manager_load_selected,
         ).grid(row=0, column=3, sticky="w", padx=(0, 6))
 
-        # Kiri: listbox akun.
-        ttk.Label(frm, text="Akun login:").grid(row=1, column=0, sticky="w", pady=(4, 2))
+        # Kiri: listbox akun (multi-select supaya bisa cek beberapa
+        # akun sekaligus tanpa harus klik satu-satu).
+        ttk.Label(
+            frm, text="Akun login (Ctrl/Shift untuk multi-select):"
+        ).grid(row=1, column=0, sticky="w", pady=(4, 2))
         self._account_manager_phones: list[str] = []
         self.account_manager_accounts = tk.Listbox(
-            frm, height=18, width=32, font=("Consolas", 10), exportselection=False
+            frm,
+            height=18,
+            width=32,
+            font=("Consolas", 10),
+            exportselection=False,
+            selectmode=tk.EXTENDED,
         )
         self.account_manager_accounts.grid(row=2, column=0, sticky="nsew", padx=(0, 8))
         self._style_listbox_widget(self.account_manager_accounts)
@@ -1136,11 +1144,14 @@ class TelegramScraperGUI:
             "<<ListboxSelect>>", self._on_account_manager_account_pick
         )
 
+        acc_btns = ttk.Frame(frm)
+        acc_btns.grid(row=3, column=0, sticky="ew", pady=(8, 0), padx=(0, 8))
         ttk.Button(
-            frm,
-            text="Refresh Daftar Akun",
-            command=self._account_manager_refresh_accounts,
-        ).grid(row=3, column=0, sticky="ew", pady=(8, 0), padx=(0, 8))
+            acc_btns, text="Pilih Semua", command=self._account_manager_select_all_accounts
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(
+            acc_btns, text="Refresh", command=self._account_manager_refresh_accounts
+        ).pack(side=tk.LEFT)
 
         # Kanan: treeview grup/channel yang sudah di-join akun terpilih.
         ttk.Label(
@@ -1152,21 +1163,23 @@ class TelegramScraperGUI:
 
         self.account_manager_tree = ttk.Treeview(
             tree_wrap,
-            columns=("title", "type", "username", "members", "id"),
+            columns=("akun", "title", "type", "username", "members", "id"),
             show="headings",
             height=18,
             selectmode="extended",
         )
+        self.account_manager_tree.heading("akun", text="Akun")
         self.account_manager_tree.heading("title", text="Judul")
         self.account_manager_tree.heading("type", text="Tipe")
         self.account_manager_tree.heading("username", text="Username/Link")
         self.account_manager_tree.heading("members", text="Members")
         self.account_manager_tree.heading("id", text="ID")
-        self.account_manager_tree.column("title", width=320, anchor="w")
-        self.account_manager_tree.column("type", width=110, anchor="center")
-        self.account_manager_tree.column("username", width=200, anchor="w")
-        self.account_manager_tree.column("members", width=90, anchor="e")
-        self.account_manager_tree.column("id", width=120, anchor="e")
+        self.account_manager_tree.column("akun", width=130, anchor="center")
+        self.account_manager_tree.column("title", width=280, anchor="w")
+        self.account_manager_tree.column("type", width=100, anchor="center")
+        self.account_manager_tree.column("username", width=180, anchor="w")
+        self.account_manager_tree.column("members", width=80, anchor="e")
+        self.account_manager_tree.column("id", width=110, anchor="e")
 
         v_scroll = ttk.Scrollbar(
             tree_wrap, orient=tk.VERTICAL, command=self.account_manager_tree.yview
@@ -4675,35 +4688,52 @@ class TelegramScraperGUI:
             except tk.TclError:
                 pass
 
-    def _on_account_manager_account_pick(self, _event=None) -> None:
-        """Saat user klik akun di listbox: kalau ada cache, langsung
-        render; kalau belum, biarkan kosong (user klik Load Groups
-        secara eksplisit dengan password)."""
+    def _account_manager_selected_phones(self) -> list[str]:
+        """Return list phone (full) untuk semua akun yang dipilih di
+        listbox kiri tab Account Manager.
+        """
         sel = self.account_manager_accounts.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        if idx >= len(self._account_manager_phones):
-            return
-        phone = self._account_manager_phones[idx]
-        self._account_manager_current_phone = phone
-        cached = self._account_manager_cache.get(phone)
-        if cached is not None:
-            self._account_manager_render_groups(cached)
-        else:
-            # Belum pernah load — kosongkan tree dan biarkan user
-            # klik "Load Groups dari Akun Terpilih".
-            self._account_manager_render_groups([])
+        return [
+            self._account_manager_phones[i]
+            for i in sel
+            if i < len(self._account_manager_phones)
+        ]
+
+    def _account_manager_select_all_accounts(self) -> None:
+        self.account_manager_accounts.selection_set(0, tk.END)
+        self._on_account_manager_account_pick()
+
+    def _on_account_manager_account_pick(self, _event=None) -> None:
+        """Saat user pilih akun (single/multi): merge cache dari semua
+        akun terpilih dan render ke tree. Akun yang belum punya cache
+        di-skip — user klik Load Groups untuk fetch.
+        """
+        phones = self._account_manager_selected_phones()
+        # Simpan akun pertama yang dipilih sebagai current (untuk
+        # default initial-file name di Export CSV).
+        self._account_manager_current_phone = phones[0] if phones else None
+        rows: list[dict] = []
+        for p in phones:
+            cached = self._account_manager_cache.get(p)
+            if cached is not None:
+                rows.extend(cached)
+        self._account_manager_render_groups(rows)
 
     def _account_manager_render_groups(self, groups: list[dict]) -> None:
+        """Render rows ke treeview kanan. Setiap dict groups harus
+        berisi key 'phone' supaya kolom Akun bisa terisi.
+        """
         for iid in self.account_manager_tree.get_children():
             self.account_manager_tree.delete(iid)
         self._account_manager_index_by_iid = {}
         for g in groups:
+            phone = g.get("phone", "") or ""
+            akun_label = mask_phone(phone) if phone else ""
             iid = self.account_manager_tree.insert(
                 "",
                 tk.END,
                 values=(
+                    akun_label,
                     g.get("title", ""),
                     g.get("type", ""),
                     g.get("username", ""),
@@ -4714,97 +4744,114 @@ class TelegramScraperGUI:
             self._account_manager_index_by_iid[iid] = g
 
     def _account_manager_load_selected(self) -> None:
-        """Fetch list grup/channel yang sudah di-join akun terpilih,
-        lalu render ke treeview kanan.
+        """Fetch list grup/channel yang sudah di-join dari SEMUA akun
+        terpilih (multi-select), lalu render gabungan ke treeview.
         """
-        sel = self.account_manager_accounts.curselection()
-        if not sel:
+        phones = self._account_manager_selected_phones()
+        if not phones:
             messagebox.showinfo(
                 "Account Manager",
-                "Pilih akun di list kiri dulu (klik baris akun).",
+                "Pilih akun di list kiri dulu (Ctrl/Shift klik untuk multi-select, "
+                "atau klik tombol 'Pilih Semua').",
             )
             return
-        idx = sel[0]
-        if idx >= len(self._account_manager_phones):
-            return
-        phone = self._account_manager_phones[idx]
+
         password = self.account_manager_password.get().strip()
         if not password:
             messagebox.showwarning("Input", "Encryption password wajib diisi")
             return
 
-        self._account_manager_current_phone = phone
         self._log(
-            f"[Account Manager] Loading groups dari {mask_phone(phone)}... (tunggu beberapa detik)"
+            f"[Account Manager] Loading groups dari {len(phones)} akun (sequential)..."
         )
 
-        async def _job():
-            groups: list[dict] = []
+        async def _fetch_for_phone(phone: str) -> list[dict] | None:
             try:
                 app = await self.manager.build_client(phone, password)
                 await app.connect()
-                try:
-                    async for dialog in app.get_dialogs():
-                        chat = dialog.chat
-                        if not chat or chat.type not in {
-                            ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL,
-                        }:
-                            continue
-                        type_label = "Group"
-                        if chat.type == ChatType.SUPERGROUP:
-                            type_label = "Supergroup"
-                        elif chat.type == ChatType.CHANNEL:
-                            type_label = "Channel"
-                        title = chat.title or str(chat.id)
-                        username = f"@{chat.username}" if chat.username else "(private)"
-                        members = getattr(chat, "members_count", None)
-                        groups.append({
-                            "id": chat.id,
-                            "title": title,
-                            "type": type_label,
-                            "username": username,
-                            "members": members if members is not None else "-",
-                        })
-                finally:
-                    try:
-                        await app.disconnect()
-                    except Exception:
-                        pass
             except Exception as exc:
                 self._post(
-                    lambda e=exc: self._log(
-                        f"[Account Manager] Gagal load groups: {type(e).__name__}: {e}"
+                    lambda p=phone, e=exc: self._log(
+                        f"[Account Manager] Gagal connect {mask_phone(p)}: "
+                        f"{type(e).__name__}: {e}"
                     )
                 )
+                return None
+            groups: list[dict] = []
+            try:
+                async for dialog in app.get_dialogs():
+                    chat = dialog.chat
+                    if not chat or chat.type not in {
+                        ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL,
+                    }:
+                        continue
+                    type_label = "Group"
+                    if chat.type == ChatType.SUPERGROUP:
+                        type_label = "Supergroup"
+                    elif chat.type == ChatType.CHANNEL:
+                        type_label = "Channel"
+                    title = chat.title or str(chat.id)
+                    username = f"@{chat.username}" if chat.username else "(private)"
+                    members = getattr(chat, "members_count", None)
+                    groups.append({
+                        "phone": phone,
+                        "id": chat.id,
+                        "title": title,
+                        "type": type_label,
+                        "username": username,
+                        "members": members if members is not None else "-",
+                    })
+            except Exception as exc:
                 self._post(
-                    lambda e=exc: messagebox.showerror(
-                        "Account Manager",
-                        f"Gagal load groups dari {mask_phone(phone)}:\n{type(e).__name__}: {e}",
+                    lambda p=phone, e=exc: self._log(
+                        f"[Account Manager] Fetch error {mask_phone(p)}: "
+                        f"{type(e).__name__}: {e}"
                     )
                 )
-                return
+            finally:
+                try:
+                    await app.disconnect()
+                except Exception:
+                    pass
+            return groups
 
-            self._account_manager_cache[phone] = groups
-            self._post(lambda g=groups: self._account_manager_render_groups(g))
+        async def _job():
+            total_groups = 0
+            for i, phone in enumerate(phones):
+                self._post(
+                    lambda p=phone, i=i, t=len(phones): self._log(
+                        f"[Account Manager] ({i + 1}/{t}) {mask_phone(p)}: loading..."
+                    )
+                )
+                groups = await _fetch_for_phone(phone)
+                if groups is None:
+                    continue
+                self._account_manager_cache[phone] = groups
+                total_groups += len(groups)
+                self._post(
+                    lambda p=phone, n=len(groups): self._log(
+                        f"[Account Manager] {mask_phone(p)}: {n} grup/channel ter-load."
+                    )
+                )
+                # Render incremental supaya user lihat progres tanpa
+                # nunggu semua akun selesai.
+                self._post(self._on_account_manager_account_pick)
+
+            self._post(self._on_account_manager_account_pick)
             self._post(
-                lambda n=len(groups): self._log(
-                    f"[Account Manager] {mask_phone(phone)}: {n} grup/channel ter-load."
+                lambda n=total_groups, a=len(phones): self._log(
+                    f"[Account Manager] Selesai. {n} row total dari {a} akun."
                 )
             )
 
         self._run_async_job(_job())
 
     def _account_manager_leave_chats(self, chats: list[dict]) -> None:
-        """Helper: leave list chats untuk akun terpilih (current_phone).
-
-        ``chats``: list dict dengan key 'id' dan 'title'.
+        """Helper: leave list chats. ``chats`` adalah list dict yang
+        SUDAH berisi key 'phone' (mengetahui akun mana yang harus
+        leave grup mana). Grup dikelompokkan per akun supaya 1 koneksi
+        per akun dipakai untuk seluruh leave-nya.
         """
-        phone = self._account_manager_current_phone
-        if not phone:
-            messagebox.showinfo(
-                "Account Manager", "Pilih akun di list kiri dulu."
-            )
-            return
         if not chats:
             messagebox.showinfo("Account Manager", "Tidak ada grup yang dipilih.")
             return
@@ -4814,24 +4861,58 @@ class TelegramScraperGUI:
             messagebox.showwarning("Input", "Encryption password wajib diisi")
             return
 
+        # Kelompokkan chats per akun.
+        by_phone: dict[str, list[dict]] = {}
+        for c in chats:
+            p = c.get("phone")
+            if not p:
+                continue
+            by_phone.setdefault(p, []).append(c)
+
+        if not by_phone:
+            messagebox.showinfo(
+                "Account Manager",
+                "Row terpilih tidak punya info akun. Re-load groups dulu.",
+            )
+            return
+
+        accounts_label = ", ".join(mask_phone(p) for p in by_phone.keys())
         if not messagebox.askyesno(
             "Konfirmasi Left",
             (
-                f"Akan keluar dari {len(chats)} grup/channel pakai akun "
-                f"{mask_phone(phone)}.\n\nLanjutkan?"
+                f"Akan keluar dari {len(chats)} grup/channel via "
+                f"{len(by_phone)} akun:\n  {accounts_label}\n\nLanjutkan?"
             ),
         ):
             return
 
         async def _job():
-            ok = 0
-            failed = 0
-            left_ids: set[int] = set()
-            try:
-                app = await self.manager.build_client(phone, password)
-                await app.connect()
+            total_ok = 0
+            total_failed = 0
+            for phone, items in by_phone.items():
+                ok = 0
+                failed = 0
+                left_ids: set[int] = set()
+                self._post(
+                    lambda p=phone, n=len(items): self._log(
+                        f"[Account Manager] Leaving {n} grup via {mask_phone(p)}..."
+                    )
+                )
                 try:
-                    for ch in chats:
+                    app = await self.manager.build_client(phone, password)
+                    await app.connect()
+                except Exception as exc:
+                    self._post(
+                        lambda p=phone, e=exc: self._log(
+                            f"[Account Manager] Connect error {mask_phone(p)}: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    )
+                    total_failed += len(items)
+                    continue
+
+                try:
+                    for ch in items:
                         cid = ch.get("id")
                         title = ch.get("title", "")
                         if cid is None:
@@ -4842,15 +4923,16 @@ class TelegramScraperGUI:
                             ok += 1
                             left_ids.add(int(cid))
                             self._post(
-                                lambda t=title: self._log(
-                                    f"[Account Manager] Left: {t}"
+                                lambda t=title, p=phone: self._log(
+                                    f"[Account Manager] Left {t} via {mask_phone(p)}"
                                 )
                             )
                         except Exception as exc:
                             failed += 1
                             self._post(
-                                lambda t=title, e=exc: self._log(
-                                    f"[Account Manager] Gagal left {t}: {type(e).__name__}: {e}"
+                                lambda t=title, p=phone, e=exc: self._log(
+                                    f"[Account Manager] Gagal left {t} via "
+                                    f"{mask_phone(p)}: {type(e).__name__}: {e}"
                                 )
                             )
                         await asyncio.sleep(1.0)
@@ -4859,27 +4941,25 @@ class TelegramScraperGUI:
                         await app.disconnect()
                     except Exception:
                         pass
-            except Exception as exc:
-                self._post(
-                    lambda e=exc: self._log(
-                        f"[Account Manager] Connect error: {type(e).__name__}: {e}"
-                    )
-                )
-                self._post(
-                    lambda e=exc: messagebox.showerror(
-                        "Account Manager",
-                        f"Connect gagal: {type(e).__name__}: {e}",
-                    )
-                )
-                return
 
-            # Update cache: buang grup yang sudah di-left.
-            cached = self._account_manager_cache.get(phone, [])
-            new_cache = [g for g in cached if int(g.get("id", 0)) not in left_ids]
-            self._account_manager_cache[phone] = new_cache
-            self._post(lambda g=new_cache: self._account_manager_render_groups(g))
+                # Update cache untuk akun ini.
+                cached = self._account_manager_cache.get(phone, [])
+                new_cache = [
+                    g for g in cached if int(g.get("id", 0)) not in left_ids
+                ]
+                self._account_manager_cache[phone] = new_cache
+                total_ok += ok
+                total_failed += failed
+                self._post(
+                    lambda p=phone, o=ok, f=failed: self._log(
+                        f"[Account Manager] {mask_phone(p)} left selesai: ok={o}, gagal={f}"
+                    )
+                )
+
+            self._post(self._on_account_manager_account_pick)
             summary = (
-                f"Left selesai untuk {mask_phone(phone)}: ok={ok}, gagal={failed}"
+                f"Left selesai: ok={total_ok}, gagal={total_failed}, "
+                f"akun={len(by_phone)}"
             )
             self._post(lambda s=summary: self._log(f"[Account Manager] {s}"))
             self._post(lambda s=summary: messagebox.showinfo("Left Result", s))
@@ -4912,12 +4992,18 @@ class TelegramScraperGUI:
         if not chats:
             messagebox.showinfo("Account Manager", "Daftar grup kosong, tidak ada yang diekspor.")
             return
-        phone = self._account_manager_current_phone or "unknown"
+        # Default name: kalau multi-akun, pakai "multi"; kalau single, pakai phone.
+        phones_in_view = {c.get("phone") for c in chats if c.get("phone")}
+        if len(phones_in_view) == 1:
+            phone = next(iter(phones_in_view))
+            default_name = f"account_groups_{phone.replace('+', '')}.csv"
+        else:
+            default_name = f"account_groups_multi_{len(phones_in_view)}_akun.csv"
         path = filedialog.asksaveasfilename(
             title="Export Account Manager",
             defaultextension=".csv",
             filetypes=[("CSV", "*.csv"), ("All files", "*.*")],
-            initialfile=f"account_groups_{phone.replace('+', '')}.csv",
+            initialfile=default_name,
         )
         if not path:
             return
@@ -4925,11 +5011,14 @@ class TelegramScraperGUI:
         try:
             with open(path, "w", encoding="utf-8", newline="") as f:
                 writer = _csv.DictWriter(
-                    f, fieldnames=["Title", "Type", "Username", "Members", "ID"]
+                    f,
+                    fieldnames=["Akun", "Title", "Type", "Username", "Members", "ID"],
                 )
                 writer.writeheader()
                 for c in chats:
+                    phone = c.get("phone", "") or ""
                     writer.writerow({
+                        "Akun": mask_phone(phone) if phone else "",
                         "Title": c.get("title", ""),
                         "Type": c.get("type", ""),
                         "Username": c.get("username", ""),
