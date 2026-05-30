@@ -30,7 +30,14 @@ class LoginWindow(tk.Toplevel):
         self.title("Login VibeTool")
         self.geometry("440x520")
         self.resizable(False, False)
-        self.transient(parent)
+        # Catatan: jangan panggil transient() kalau parent ter-withdraw,
+        # karena di Windows itu bikin Toplevel ikut ke-hide & tidak muncul
+        # di taskbar. Cek visibility parent dulu.
+        try:
+            if str(parent.state()) != "withdrawn":
+                self.transient(parent)
+        except Exception:
+            pass
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -40,6 +47,26 @@ class LoginWindow(tk.Toplevel):
         self.last_attempt_email: str = prefill_email
 
         self._build_ui(prefill_email=prefill_email)
+
+        # Paksa window muncul di depan & ambil fokus. Di Windows, Toplevel
+        # kadang muncul di belakang console / window lain.
+        self._force_to_front()
+
+    def _force_to_front(self) -> None:
+        try:
+            self.update_idletasks()
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(200, lambda: self._unset_topmost())
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _unset_topmost(self) -> None:
+        try:
+            self.attributes("-topmost", False)
+        except Exception:
+            pass
 
     # ---------- UI ----------
 

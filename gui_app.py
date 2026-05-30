@@ -5617,7 +5617,23 @@ def _prompt_api_credentials(parent: tk.Tk) -> bool:
     return result["ok"]
 
 
-def main() -> None:
+def _write_crash_log(exc: BaseException) -> Path:
+    """Tulis traceback ke crash.log di folder script — fallback diagnostic
+    kalau Tk messagebox juga gagal."""
+    import traceback as _tb
+
+    log_path = Path(__file__).resolve().parent / "crash.log"
+    try:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write("\n========== CRASH ==========\n")
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S\n"))
+            fh.write("".join(_tb.format_exception(exc.__class__, exc, exc.__traceback__)))
+    except Exception:
+        pass
+    return log_path
+
+
+def _main_inner() -> None:
     root = tk.Tk()
     # Sembunyikan window utama sementara login gate jalan supaya tidak ada
     # blink jendela Tk kosong di belakang LoginWindow.
@@ -5663,6 +5679,33 @@ def main() -> None:
             root.destroy()
             return
     root.mainloop()
+
+
+def main() -> None:
+    """Entry point dengan crash logging — supaya error tidak invisible saat
+    dijalankan via Run-GUI.bat / Run-GUI.vbs (pythonw)."""
+    try:
+        _main_inner()
+    except BaseException as exc:
+        log_path = _write_crash_log(exc)
+        try:
+            # Pakai messagebox baru dengan Tk root sendiri, supaya tetap
+            # bisa tampil walau crash terjadi setelah root sebelumnya rusak.
+            err_root = tk.Tk()
+            err_root.withdraw()
+            messagebox.showerror(
+                "Telegram Blaster — Crash",
+                f"Aplikasi gagal start:\n\n{exc.__class__.__name__}: {exc}\n\n"
+                f"Detail lengkap ditulis ke:\n{log_path}",
+            )
+            err_root.destroy()
+        except Exception:
+            # Fallback terakhir: minimal print ke stderr (kalau dijalankan
+            # via python.exe akan kelihatan di console).
+            import traceback as _tb
+
+            _tb.print_exception(exc.__class__, exc, exc.__traceback__)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
