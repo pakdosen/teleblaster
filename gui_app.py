@@ -23,6 +23,12 @@ from account_manager import AccountManager
 from configs import Config
 from funcs.auth import ensure_authenticated
 from funcs.auth.cache import AuthCache, default_cache_path
+from funcs.free_limits import (
+    DISABLED_TABS,
+    MAX_TELEGRAM_ACCOUNTS,
+    block_if_account_limit_reached,
+    show_upgrade_popup,
+)
 from funcs.helpers import execute_with_rotation, load_checkpoint, resolve_target_chat, save_checkpoint, save_session_string
 from funcs.qr_auth import show_qr_and_wait_login
 from utils import (
@@ -43,7 +49,7 @@ class TelegramScraperGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Telegram Blaster By VibeTool.Club")
+        self.root.title("Telegram Blaster Free Version")
         self.root.geometry("1080x800")
         self.root.minsize(1000, 740)
 
@@ -345,8 +351,18 @@ class TelegramScraperGUI:
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", c["panel"]), ("active", c["panel_2"])],
-            foreground=[("selected", c["accent"]), ("active", c["text"])],
+            background=[
+                ("disabled", c["bg"]),
+                ("selected", c["panel"]),
+                ("active", c["panel_2"]),
+            ],
+            foreground=[
+                # Tab dikunci di Free version → render lebih redup + label
+                # khusus lock supaya jelas tidak bisa diklik.
+                ("disabled", c["border"]),
+                ("selected", c["accent"]),
+                ("active", c["text"]),
+            ],
             expand=[("selected", (0, 0, 0, 0))],
         )
 
@@ -486,12 +502,12 @@ class TelegramScraperGUI:
 
         ttk.Label(
             header_text,
-            text="Telegram Blaster",
+            text="Telegram Blaster Free Version",
             style="Header.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             header_text,
-            text="By VibeTool.Club  ·  Multi-account members scraping, adding & broadcasting  ·  v0.1",
+            text="By VibeTool.Club  ·  1 akun Telegram · Members Scraper + Broadcast  ·  v0.1",
             style="SubHeader.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -504,6 +520,7 @@ class TelegramScraperGUI:
 
         notebook = ttk.Notebook(frame)
         notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook = notebook
 
         login_tab, self.tab_login = self._create_scrollable_tab(notebook)
         scrape_tab, self.tab_scrape = self._create_scrollable_tab(notebook)
@@ -516,12 +533,16 @@ class TelegramScraperGUI:
 
         notebook.add(login_tab, text="Login")
         notebook.add(scrape_tab, text="Members Scraper")
-        notebook.add(grup_scrapper_tab, text="Grup Scrapper")
-        notebook.add(add_tab, text="Members Adder")
+        # Free version: tab Grup Scrapper & Members Adder dikunci.
+        # Tetap di-add supaya layout konsisten, tapi state="disabled" dan
+        # ada handler <Button-1> yang nampilin popup upgrade.
+        notebook.add(grup_scrapper_tab, text="\U0001F512 Grup Scrapper (Pro)", state="disabled")
+        notebook.add(add_tab, text="\U0001F512 Members Adder (Pro)", state="disabled")
         notebook.add(broadcast_tab, text="Broadcast")
         notebook.add(sessions_tab, text="Sessions")
         notebook.add(account_manager_tab, text="Account Manager")
         notebook.add(about_tab, text="About")
+        notebook.bind("<Button-1>", self._on_notebook_click, add="+")
 
         self._build_login_tab()
         self._build_scrape_tab()
@@ -1240,7 +1261,7 @@ class TelegramScraperGUI:
 
         ttk.Label(
             self.tab_about,
-            text="Telegram Blaster",
+            text="Telegram Blaster Free Version",
             style="Header.TLabel",
         ).pack(anchor="w", pady=(4, 2))
         ttk.Label(
@@ -1250,12 +1271,13 @@ class TelegramScraperGUI:
         ).pack(anchor="w", pady=(0, 12))
 
         text = (
-            "GUI desktop multi-akun Telegram untuk scraping members, adding members,\n"
-            "dan broadcasting pesan + attachment.\n\n"
+            "GUI desktop Telegram untuk scraping members + broadcasting pesan.\n\n"
+            "Versi Free terbatas pada 1 akun Telegram. Members Adder &\n"
+            "Grup Scrapper hanya tersedia di versi Pro.\n\n"
             "Data session disimpan lokal dan terenkripsi (Fernet + PBKDF2).\n"
             "Gunakan hanya untuk akun/grup yang Anda kelola secara legal.\n"
             "Patuhi Telegram Terms of Service & hukum lokal Anda.\n\n"
-            "© VibeTool.Club  —  https://vibetool.club"
+            "© VibeTool.Club  —  https://vibetool.id  ·  Upgrade ke Pro di vibetool.id"
         )
         ttk.Label(self.tab_about, text=text, justify=tk.LEFT).pack(anchor="w", pady=(2, 12))
 
@@ -1445,6 +1467,41 @@ class TelegramScraperGUI:
         self._set_status("Running...")
         threading.Thread(target=_worker, daemon=True).start()
 
+    # ---------- Free version gating ----------
+
+    def _enforce_free_account_limit(self) -> bool:
+        """Kalau jumlah session Telegram aktif sudah >= batas Free version,
+        tampilkan popup upgrade dan return True (caller harus early-return).
+        """
+        try:
+            current = len(self.manager.list_sessions())
+        except Exception:
+            current = 0
+        return block_if_account_limit_reached(current, parent=self.root)
+
+    def _on_notebook_click(self, event) -> None:
+        """Intercept klik tab yang dikunci di Free version (Members Adder,
+        Grup Scrapper). Notebook sudah ``state="disabled"`` untuk tab itu,
+        tapi user perlu feedback eksplisit kenapa tidak bisa pindah ke sana.
+        """
+        try:
+            tab_index = self.notebook.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        try:
+            tab_text = self.notebook.tab(tab_index, "text")
+        except tk.TclError:
+            return
+        # Tab label render dengan prefix "\U0001F512 ... (Pro)", jadi pakai
+        # substring match terhadap nama fitur canonical.
+        for feature in DISABLED_TABS:
+            if feature in tab_text:
+                show_upgrade_popup(
+                    parent=self.root,
+                    title=f"{feature} \u2014 Fitur Pro",
+                )
+                return
+
     @staticmethod
     def _extract_flood_wait_seconds(error_text: str) -> int | None:
         m = re.search(r"FLOOD_WAIT_?(\d+)", (error_text or "").upper())
@@ -1464,6 +1521,10 @@ class TelegramScraperGUI:
     def _send_otp(self) -> None:
         if self.auth_busy:
             messagebox.showinfo("Login", "Proses login sedang berjalan. Tunggu sampai selesai.")
+            return
+
+        # Free version: cuma boleh 1 akun Telegram.
+        if self._enforce_free_account_limit():
             return
 
         phone = self.login_phone.get().strip()
@@ -1649,6 +1710,10 @@ class TelegramScraperGUI:
     def _start_qr_login(self) -> None:
         if self.auth_busy:
             messagebox.showinfo("Login", "Proses login sedang berjalan. Tunggu sampai selesai.")
+            return
+
+        # Free version: cuma boleh 1 akun Telegram.
+        if self._enforce_free_account_limit():
             return
 
         phone_label = self.qr_phone_label.get().strip()
