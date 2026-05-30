@@ -10,6 +10,7 @@ WhatsApp" (sama dengan halaman /pending di website).
 
 from __future__ import annotations
 
+import queue
 import threading
 import tkinter as tk
 import webbrowser
@@ -43,7 +44,14 @@ class RegisterWindow(tk.Toplevel):
         self.registered_user: Optional[dict] = None
         self._logo_ref = None  # cegah PhotoImage di-GC
 
+        # Queue thread → main loop (Python 3.14 strict thread-safety).
+        self._result_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._poll_after_id: Optional[str] = None
+        self._wa_btn: Optional[ttk.Button] = None
+
         self._build_form()
+        self._schedule_poll()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         try:
             self.update_idletasks()
@@ -161,15 +169,20 @@ class RegisterWindow(tk.Toplevel):
         self._set_error("")
         self.submit_btn.configure(state="disabled", text="Mengirim...")
 
+        q = self._result_queue
+
         def worker():
-            result = self.client.register(
-                name=name,
-                email=email,
-                whatsapp_number=wa,
-                password=password,
-                password_confirmation=confirm,
-            )
-            self.after(0, lambda: self._handle_result(result, email))
+            try:
+                result = self.client.register(
+                    name=name,
+                    email=email,
+                    whatsapp_number=wa,
+                    password=password,
+                    password_confirmation=confirm,
+                )
+                q.put(("register_result", result, email))
+            except BaseException as exc:  # noqa: BLE001
+                q.put(("register_error", exc, email))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -275,12 +288,13 @@ class RegisterWindow(tk.Toplevel):
                 ).pack(anchor="w", padx=12, pady=1, fill="x")
             tk.Frame(info_box, height=8, bg=DARK_COLORS["panel"]).pack()
 
-        ttk.Button(
+        self._wa_btn = ttk.Button(
             container,
             text="Hubungi Admin via WhatsApp",
             command=self._open_admin_wa,
             style="AuthOk.TButton",
-        ).pack(fill="x", pady=(0, 8))
+        )
+        self._wa_btn.pack(fill="x", pady=(0, 8))
         ttk.Button(
             container,
             text="Sudah Diaktifkan? Tutup & Login",
@@ -289,7 +303,29 @@ class RegisterWindow(tk.Toplevel):
         ).pack(fill="x")
 
     def _open_admin_wa(self) -> None:
-        admin = self.client.fetch_whatsapp_admin()
+        # Fetch nomor admin di worker thread — jangan blokir UI.
+        if self._wa_btn is not None:
+            try:
+                self._wa_btn.configure(state="disabled", text="Mengambil nomor admin…")
+            except Exception:
+                pass
+        q = self._result_queue
+
+        def worker():
+            try:
+                admin = self.client.fetch_whatsapp_admin()
+                q.put(("wa_admin_result", admin))
+            except BaseException as exc:  # noqa: BLE001
+                q.put(("wa_admin_error", exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_wa_admin(self, admin) -> None:
+        if self._wa_btn is not None:
+            try:
+                self._wa_btn.configure(state="normal", text="Hubungi Admin via WhatsApp")
+            except Exception:
+                pass
         if not admin.number:
             messagebox.showwarning(
                 "Nomor Admin Belum Tersedia",
@@ -305,3 +341,63 @@ class RegisterWindow(tk.Toplevel):
             whatsapp_number=user.get("whatsapp_number"),
         )
         webbrowser.open(link)
+
+    # ---------- thread → main loop bridge ----------
+
+    def _schedule_poll(self) -> None:
+        try:
+            self._poll_after_id = self.after(50, self._poll_result_queue)
+        except Exception:
+            self._poll_after_id = None
+
+    def _poll_result_queue(self) -> None:
+        try:
+            while True:
+                try:
+                    msg = self._result_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._dispatch(msg)
+        finally:
+            if self.winfo_exists():
+                self._schedule_poll()
+
+    def _dispatch(self, msg: tuple) -> None:
+        kind = msg[0]
+        try:
+            if kind == "register_result":
+                _, result, email = msg
+                self._handle_result(result, email)
+            elif kind == "register_error":
+                _, exc, _email = msg
+                self.submit_btn.configure(state="normal", text="Daftar")
+                self._set_error(f"Error: {exc}")
+            elif kind == "wa_admin_result":
+                _, admin = msg
+                self._handle_wa_admin(admin)
+            elif kind == "wa_admin_error":
+                _, exc = msg
+                if self._wa_btn is not None:
+                    try:
+                        self._wa_btn.configure(
+                            state="normal",
+                            text="Hubungi Admin via WhatsApp",
+                        )
+                    except Exception:
+                        pass
+                messagebox.showwarning(
+                    "Gagal Mengambil Nomor Admin",
+                    f"Terjadi error saat fetch nomor admin: {exc}",
+                    parent=self,
+                )
+        except Exception:
+            pass
+
+    def _on_close(self) -> None:
+        if self._poll_after_id is not None:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
+        self.destroy()

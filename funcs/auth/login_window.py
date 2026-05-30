@@ -7,6 +7,7 @@ dikembalikan ke caller lewat callback `on_success`.
 
 from __future__ import annotations
 
+import queue
 import threading
 import tkinter as tk
 import webbrowser
@@ -51,7 +52,14 @@ class LoginWindow(tk.Toplevel):
         self.last_attempt_email: str = prefill_email
         self._logo_ref = None  # cegah PhotoImage di-GC
 
+        # Queue untuk komunikasi thread → main thread (Python 3.14+ tidak
+        # mengizinkan tk.after() dipanggil dari thread lain). Setiap pesan
+        # bentuknya: ("kind", payload, ...extra...).
+        self._result_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._poll_after_id: Optional[str] = None
+
         self._build_ui(prefill_email=prefill_email)
+        self._schedule_poll()
 
         # Paksa window muncul di depan & ambil fokus. Di Windows, Toplevel
         # kadang muncul di belakang console / window lain.
@@ -192,9 +200,16 @@ class LoginWindow(tk.Toplevel):
         self._set_busy(True)
         self.last_attempt_email = email
 
+        q = self._result_queue
+
         def worker():
-            result = self.client.validate_member(email=email, password=password)
-            self.after(0, lambda: self._handle_login(result, email))
+            # JANGAN panggil method Tk dari thread ini — cuma push ke queue.
+            # Main loop akan polling queue via self.after().
+            try:
+                result = self.client.validate_member(email=email, password=password)
+                q.put(("login_result", result, email))
+            except BaseException as exc:  # noqa: BLE001
+                q.put(("login_error", exc, email))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -230,6 +245,21 @@ class LoginWindow(tk.Toplevel):
         elif result.is_no_access:
             # User aktif tapi belum klaim produk teleblaster.
             self._prompt_claim_product()
+        elif result.error_code == "product_not_found":
+            # Slug yang dikirim aplikasi tidak match dengan produk apapun
+            # di vibetool.id. Kemungkinan besar admin pakai slug lain —
+            # arahkan user untuk set VIBETOOL_PRODUCT_SLUG di .env.
+            messagebox.showerror(
+                "Produk Tidak Ditemukan",
+                f"Aplikasi mencari produk dengan slug "
+                f"'{self.client.config.product_slug}' di vibetool.id\n"
+                "tapi produknya tidak ada.\n\n"
+                "Cek halaman Admin → Products di vibetool.id, lalu salin slug\n"
+                "produk Teleblaster ke file .env aplikasi:\n\n"
+                "    VIBETOOL_PRODUCT_SLUG=<slug-produk-kamu>\n\n"
+                "Lalu restart aplikasi.",
+                parent=self,
+            )
 
     def _prompt_claim_product(self) -> None:
         from .config import VibetoolConfig  # local import untuk hindari circular
@@ -261,7 +291,25 @@ class LoginWindow(tk.Toplevel):
         webbrowser.open(self.client.config.web_register_url)
 
     def _open_admin_wa(self) -> None:
-        admin = self.client.fetch_whatsapp_admin()
+        # Fetch nomor admin di worker thread supaya UI tidak freeze. Hasilnya
+        # akan diproses lewat queue di main loop (lihat _handle_wa_admin).
+        self.wa_btn.configure(state="disabled", text="Mengambil nomor admin…")
+        q = self._result_queue
+
+        def worker():
+            try:
+                admin = self.client.fetch_whatsapp_admin()
+                q.put(("wa_admin_result", admin))
+            except BaseException as exc:  # noqa: BLE001
+                q.put(("wa_admin_error", exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_wa_admin(self, admin) -> None:
+        try:
+            self.wa_btn.configure(state="normal", text="Hubungi Admin via WhatsApp")
+        except Exception:
+            pass
         if not admin.number:
             messagebox.showwarning(
                 "Nomor Admin Belum Tersedia",
@@ -277,8 +325,63 @@ class LoginWindow(tk.Toplevel):
         )
         webbrowser.open(link)
 
+    # ---------- thread → main loop bridge ----------
+
+    def _schedule_poll(self) -> None:
+        try:
+            self._poll_after_id = self.after(50, self._poll_result_queue)
+        except Exception:
+            self._poll_after_id = None
+
+    def _poll_result_queue(self) -> None:
+        # Drain semua pesan yang ada, lalu reschedule.
+        try:
+            while True:
+                try:
+                    msg = self._result_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._dispatch(msg)
+        finally:
+            if self.winfo_exists():
+                self._schedule_poll()
+
+    def _dispatch(self, msg: tuple) -> None:
+        kind = msg[0]
+        try:
+            if kind == "login_result":
+                _, result, email = msg
+                self._handle_login(result, email)
+            elif kind == "login_error":
+                _, exc, _email = msg
+                self._set_busy(False)
+                self._set_status(f"Error: {exc}", error=True)
+            elif kind == "wa_admin_result":
+                _, admin = msg
+                self._handle_wa_admin(admin)
+            elif kind == "wa_admin_error":
+                _, exc = msg
+                try:
+                    self.wa_btn.configure(state="normal", text="Hubungi Admin via WhatsApp")
+                except Exception:
+                    pass
+                messagebox.showwarning(
+                    "Gagal Mengambil Nomor Admin",
+                    f"Terjadi error saat fetch nomor admin: {exc}",
+                    parent=self,
+                )
+        except Exception:
+            # Jangan biarkan dispatch error bikin polling loop berhenti.
+            pass
+
     def _on_close(self) -> None:
         self.success = False
+        if self._poll_after_id is not None:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
         self.destroy()
 
     # ---------- helpers ----------

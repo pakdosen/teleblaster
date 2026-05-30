@@ -11,7 +11,12 @@ import os
 from dataclasses import dataclass
 
 DEFAULT_BASE_URL = "https://vibetool.id"
-DEFAULT_PRODUCT_SLUG = "teleblaster"
+# Slug ini harus persis sama dengan produk yang dibuat admin di
+# vibetool.id (lihat tab Admin → Products, atau URL /p/<slug>). Default
+# saat ini menunjuk ke produk "Teleblaster Free Version" yang sudah
+# di-publish; kalau slug-mu beda, override lewat .env:
+#     VIBETOOL_PRODUCT_SLUG=teleblaster-free-version
+DEFAULT_PRODUCT_SLUG = "teleblaster-free-version"
 DEFAULT_TIMEOUT = 15.0
 # Cache valid sebelum re-validate ke API. Sesuai rekomendasi
 # `FREE_PRODUCT_ACCESS.md` di repo dirazerita/vibetool.
