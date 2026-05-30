@@ -115,6 +115,39 @@ python quick_qr_test.py
 
 Jika berhasil, script akan menampilkan info akun (`user id`, `phone`, `username`).
 
+## Login VibeTool
+
+Sejak versi ini, aplikasi memerlukan akun **VibeTool.id** untuk dijalankan.
+Saat GUI dibuka, sebuah window login akan muncul lebih dulu meminta email +
+password member VibeTool. Setelah login berhasil, sesi disimpan terenkripsi
+lokal dan dianggap valid selama **24 jam** sebelum harus re-validate.
+
+Window login menyediakan 4 aksi:
+
+- **Login** — validasi ke `https://vibetool.id/api/auth/validate-member`.
+- **Daftar di Sini** — buka form registrasi in-app yang submit ke endpoint
+  JSON `POST /api/auth/register`. Akun baru dibuat dengan status `pending`
+  dan harus diaktifkan admin via WhatsApp.
+- **Daftar di Website** — buka browser ke `https://vibetool.id/register`.
+- **Hubungi Admin via WhatsApp** — nomor admin di-fetch dari endpoint
+  `GET /api/setting/whatsapp-admin` (bisa diubah dari Admin Panel kapan
+  saja), lalu app membuka `wa.me/<nomor>` dengan pesan aktivasi yang
+  sudah pre-filled.
+
+Untuk logout, buka tab **About** lalu klik **Logout VibeTool**.
+
+### Konfigurasi opsional (.env)
+
+Default produksi sudah dipakai otomatis. Override hanya jika perlu testing
+atau pakai instance VibeTool lain:
+
+```env
+VIBETOOL_BASE_URL=https://vibetool.id
+VIBETOOL_PRODUCT_SLUG=teleblaster
+VIBETOOL_TIMEOUT=15
+VIBETOOL_TTL_HOURS=24
+```
+
 ## Catatan
 
 - Gunakan tool ini hanya pada akun dan grup yang Anda miliki izin untuk mengelola.
