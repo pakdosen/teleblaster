@@ -25,7 +25,13 @@ class RegisterWindow(tk.Toplevel):
         self.title("Daftar Akun VibeTool")
         self.geometry("460x600")
         self.resizable(False, False)
-        self.transient(parent)
+        # Sama seperti LoginWindow: jangan transient() ke parent yang
+        # ter-withdraw — di Windows itu bikin window hidden.
+        try:
+            if str(parent.state()) != "withdrawn":
+                self.transient(parent)
+        except Exception:
+            pass
         self.grab_set()
 
         self.client = client
@@ -33,6 +39,21 @@ class RegisterWindow(tk.Toplevel):
         self.registered_user: Optional[dict] = None
 
         self._build_form()
+
+        try:
+            self.update_idletasks()
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(200, lambda: self._unset_topmost())
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _unset_topmost(self) -> None:
+        try:
+            self.attributes("-topmost", False)
+        except Exception:
+            pass
 
     # ---------- form ----------
 
