@@ -21,6 +21,8 @@ from pyrogram.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo
 
 from account_manager import AccountManager
 from configs import Config
+from funcs.auth import ensure_authenticated
+from funcs.auth.cache import AuthCache, default_cache_path
 from funcs.helpers import execute_with_rotation, load_checkpoint, resolve_target_chat, save_checkpoint, save_session_string
 from funcs.qr_auth import show_qr_and_wait_login
 from utils import (
@@ -1257,6 +1259,8 @@ class TelegramScraperGUI:
         )
         ttk.Label(self.tab_about, text=text, justify=tk.LEFT).pack(anchor="w", pady=(2, 12))
 
+        self._build_about_account_section()
+
         ttk.Label(self.tab_about, text="Appearance", font=("Segoe UI Semibold", 11)).pack(anchor="w", pady=(2, 6))
         ttk.Label(
             self.tab_about,
@@ -1272,6 +1276,44 @@ class TelegramScraperGUI:
             style="Accent.TButton",
             command=self._toggle_theme,
         ).pack(anchor="w")
+
+    def _build_about_account_section(self) -> None:
+        cache = AuthCache(default_cache_path())
+        state = cache.load()
+        email = state.email if state else "-"
+
+        ttk.Label(
+            self.tab_about,
+            text="VibeTool Account",
+            font=("Segoe UI Semibold", 11),
+        ).pack(anchor="w", pady=(2, 6))
+        ttk.Label(
+            self.tab_about,
+            text=f"Login as: {email}",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 6))
+        ttk.Button(
+            self.tab_about,
+            text="Logout VibeTool",
+            command=self._logout_vibetool,
+        ).pack(anchor="w", pady=(0, 12))
+
+    def _logout_vibetool(self) -> None:
+        if not messagebox.askyesno(
+            "Logout VibeTool",
+            "Yakin logout dari akun VibeTool?\n"
+            "Aplikasi akan ditutup dan kamu harus login lagi saat berikutnya dibuka.",
+            parent=self.root,
+        ):
+            return
+        try:
+            AuthCache(default_cache_path()).clear()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def _set_status(self, text: str) -> None:
         prefix = "● " if not text.startswith("●") else ""
@@ -5577,6 +5619,26 @@ def _prompt_api_credentials(parent: tk.Tk) -> bool:
 
 def main() -> None:
     root = tk.Tk()
+    # Sembunyikan window utama sementara login gate jalan supaya tidak ada
+    # blink jendela Tk kosong di belakang LoginWindow.
+    try:
+        root.withdraw()
+    except Exception:
+        pass
+
+    if not ensure_authenticated(root):
+        # User batal / tutup window login → keluar aplikasi.
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return
+
+    try:
+        root.deiconify()
+    except Exception:
+        pass
+
     # Try to start. If env credentials missing, prompt once and retry.
     for _attempt in range(2):
         try:
