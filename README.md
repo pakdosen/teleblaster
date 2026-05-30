@@ -38,6 +38,29 @@ file `.venv/.tele_deps_ok`.
 `Run-GUI.vbs` adalah varian silent (tanpa jendela CMD). Cocok dipakai jadi
 shortcut di Desktop setelah setup awal selesai.
 
+## Build Distribusi (Onefile .exe untuk Member)
+
+Untuk membungkus aplikasi jadi **satu file `.exe`** yang bisa langsung dijalankan
+member tanpa install Python / venv / dependency apa pun, jalankan di mesin
+Windows:
+
+```
+build_distribusi.bat
+```
+
+Skrip akan:
+
+1. Pastikan venv + dependency terinstall (`requirements.txt` + PyInstaller).
+2. Bersihkan build lama.
+3. Jalankan PyInstaller `teleblaster.spec` mode **onefile**.
+4. Salin hasilnya ke `HASIL BUILD/TelegramBlaster.exe` (~30 MB) — itulah file
+   yang siap diupload ke vibetool.id untuk dibagi ke member.
+
+Catatan: spec sudah membundel `assets/vibetool_logo.png/.ico`, `.env`
+(API_ID + API_HASH), dan semua hidden import yang dipakai (pyrogram, PIL,
+cryptography, dst). `TgCrypto` dilewati di Python 3.12+ (tidak ada wheel pre-built)
+— pyrogram fallback ke pyaes secara otomatis (sedikit lebih lambat, fungsional sama).
+
 ## Manual Setup (Linux / Mac / advanced users)
 
 1. Install dependencies

@@ -1,5 +1,12 @@
 pyrogram>=2.0.106
-TgCrypto>=1.2.5
+# TgCrypto adalah accelerator C-extension (AES-256). Hanya ada wheel
+# pre-built untuk Python <= 3.11; di Python 3.12+ (termasuk 3.14 yang
+# dipakai mesin Windows distribusi) pip akan mencoba compile dari source
+# dan gagal kalau tidak ada toolchain C. Pyrogram tetap jalan tanpa
+# TgCrypto (fallback ke pyaes, lebih lambat tapi compatible). Maka kita
+# install hanya untuk Python lama supaya dev di 3.10/3.11 tetap dapat
+# speed-up, sementara build distribusi di 3.12+ tetap sukses.
+TgCrypto>=1.2.5; python_version < "3.12"
 rich>=13.7.0
 python-dotenv>=1.0.1
 cryptography>=42.0.8

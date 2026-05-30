@@ -2,18 +2,17 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-title Build Distribusi - Telegram Blaster By VibeTool.Club
+title Build Distribusi - Telegram Blaster Free Version
 
 echo ============================================================
-echo   Build Distribusi - Telegram Blaster By VibeTool.Club
+echo   Build Distribusi - Telegram Blaster Free Version
 echo ============================================================
 echo.
 echo Skrip ini akan:
 echo   1. Pastikan venv + dependency terinstall
 echo   2. Install PyInstaller jika belum
-echo   3. Build aplikasi jadi folder portable
-echo   4. Copy hasilnya ke folder "Distribusi\TelegramBlaster"
-echo   5. Buat ZIP "Distribusi\TelegramBlaster.zip" siap kirim
+echo   3. Build aplikasi jadi 1 file: TelegramBlaster.exe (onefile)
+echo   4. Pindahkan hasilnya ke folder "HASIL BUILD\"
 echo.
 
 REM ============================================================
@@ -62,45 +61,37 @@ REM ============================================================
 echo [INFO] Bersihkan build lama ...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
-if exist Distribusi\TelegramBlaster rmdir /s /q Distribusi\TelegramBlaster
-if exist Distribusi\TelegramBlaster.zip del /q Distribusi\TelegramBlaster.zip
+if exist "HASIL BUILD" rmdir /s /q "HASIL BUILD"
 
 REM ============================================================
-REM 6. Run PyInstaller
+REM 6. Run PyInstaller (mode onefile lewat teleblaster.spec)
 REM ============================================================
 echo [INFO] Build dengan PyInstaller (bisa 1-3 menit) ...
 "%PYEXE%" -m PyInstaller teleblaster.spec --noconfirm
 if errorlevel 1 goto :pyi_build_failed
 
-if not exist "dist\TelegramBlaster\TelegramBlaster.exe" goto :no_exe
+if not exist "dist\TelegramBlaster.exe" goto :no_exe
 
 REM ============================================================
-REM 7. Copy ke folder Distribusi + sertakan README untuk client
+REM 7. Copy ke folder HASIL BUILD
 REM ============================================================
-if not exist Distribusi mkdir Distribusi
-echo [INFO] Copy hasil build ke Distribusi\TelegramBlaster ...
-xcopy /e /i /q /y "dist\TelegramBlaster" "Distribusi\TelegramBlaster" >nul
-if exist "Distribusi\README-CLIENT.txt" copy /y "Distribusi\README-CLIENT.txt" "Distribusi\TelegramBlaster\README.txt" >nul
-
-REM ============================================================
-REM 8. ZIP folder hasil supaya gampang dikirim
-REM ============================================================
-echo [INFO] Membuat ZIP Distribusi\TelegramBlaster.zip ...
-powershell -NoProfile -Command "Compress-Archive -Path 'Distribusi\TelegramBlaster\*' -DestinationPath 'Distribusi\TelegramBlaster.zip' -Force"
-if errorlevel 1 echo [WARNING] Gagal buat ZIP, folder tetap tersedia.
+if not exist "HASIL BUILD" mkdir "HASIL BUILD"
+echo [INFO] Copy TelegramBlaster.exe ke "HASIL BUILD\" ...
+copy /y "dist\TelegramBlaster.exe" "HASIL BUILD\TelegramBlaster.exe" >nul
+if errorlevel 1 goto :copy_failed
 
 echo.
 echo ============================================================
 echo   BUILD SELESAI
 echo ============================================================
 echo.
-echo Folder portable :  Distribusi\TelegramBlaster\
-echo File ZIP siap kirim:  Distribusi\TelegramBlaster.zip
+echo File siap upload ke vibetool.id:
+echo   HASIL BUILD\TelegramBlaster.exe
 echo.
 echo Cara test sebelum kirim ke client:
-echo   1. Buka Distribusi\TelegramBlaster
-echo   2. Double-click TelegramBlaster.exe
-echo   3. Pastikan GUI muncul dan login bisa berjalan
+echo   1. Double-click "HASIL BUILD\TelegramBlaster.exe"
+echo   2. Pastikan window login VibeTool muncul
+echo   3. Login pakai akun vibetool.id, lalu pastikan GUI utama tampil
 echo.
 pause
 exit /b 0
@@ -172,8 +163,16 @@ exit /b 1
 :no_exe
 echo.
 echo [ERROR] Output build tidak ditemukan di
-echo   dist\TelegramBlaster\TelegramBlaster.exe
+echo   dist\TelegramBlaster.exe
 echo PyInstaller mungkin gagal silent. Coba ulang skrip.
+echo.
+pause
+exit /b 1
+
+:copy_failed
+echo.
+echo [ERROR] Gagal copy TelegramBlaster.exe ke folder "HASIL BUILD".
+echo Pastikan folder tidak sedang dibuka oleh aplikasi lain.
 echo.
 pause
 exit /b 1
