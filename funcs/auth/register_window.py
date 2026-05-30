@@ -17,13 +17,14 @@ from tkinter import messagebox, ttk
 from typing import Optional
 
 from .client import VibetoolClient
+from .theme import DARK_COLORS, apply_auth_theme, apply_window_icon, load_logo
 
 
 class RegisterWindow(tk.Toplevel):
     def __init__(self, parent: tk.Misc, client: VibetoolClient, on_success_email: Optional[callable] = None):
         super().__init__(parent)
         self.title("Daftar Akun VibeTool")
-        self.geometry("460x600")
+        self.geometry("480x640")
         self.resizable(False, False)
         # Sama seperti LoginWindow: jangan transient() ke parent yang
         # ter-withdraw — di Windows itu bikin window hidden.
@@ -34,9 +35,13 @@ class RegisterWindow(tk.Toplevel):
             pass
         self.grab_set()
 
+        apply_auth_theme(self)
+        apply_window_icon(self)
+
         self.client = client
         self.on_success_email = on_success_email
         self.registered_user: Optional[dict] = None
+        self._logo_ref = None  # cegah PhotoImage di-GC
 
         self._build_form()
 
@@ -58,20 +63,31 @@ class RegisterWindow(tk.Toplevel):
     # ---------- form ----------
 
     def _build_form(self) -> None:
-        container = ttk.Frame(self, padding=24)
+        container = ttk.Frame(self, padding=24, style="Auth.TFrame")
         container.pack(fill="both", expand=True)
+
+        # Logo kecil di header
+        self._logo_ref = load_logo(56)
+        if self._logo_ref is not None:
+            tk.Label(
+                container,
+                image=self._logo_ref,
+                bg=DARK_COLORS["bg"],
+                borderwidth=0,
+                highlightthickness=0,
+            ).pack(pady=(0, 4))
 
         ttk.Label(
             container,
             text="Daftar Akun VibeTool",
-            font=("Segoe UI", 16, "bold"),
+            style="AuthHeader.TLabel",
         ).pack(pady=(0, 4))
         ttk.Label(
             container,
             text="Setelah daftar, akun perlu diaktifkan admin via WhatsApp.",
             wraplength=400,
             justify="center",
-            foreground="#64748b",
+            style="AuthSub.TLabel",
         ).pack(pady=(0, 16))
 
         self.name_var = tk.StringVar()
@@ -87,20 +103,41 @@ class RegisterWindow(tk.Toplevel):
             ("Password", self.password_var, "*"),
             ("Konfirmasi Password", self.confirm_var, "*"),
         ):
-            ttk.Label(container, text=label).pack(anchor="w")
-            entry = ttk.Entry(container, textvariable=var, width=40, show=show if show else "")
-            entry.pack(fill="x", pady=(2, 10))
+            ttk.Label(container, text=label, style="Auth.TLabel").pack(anchor="w")
+            entry = ttk.Entry(
+                container,
+                textvariable=var,
+                width=40,
+                show=show if show else "",
+                style="Auth.TEntry",
+            )
+            entry.pack(fill="x", pady=(2, 10), ipady=3)
 
-        self.status_label = ttk.Label(container, text="", foreground="#dc2626", wraplength=400)
+        self.status_label = ttk.Label(
+            container,
+            text="",
+            wraplength=400,
+            style="AuthError.TLabel",
+        )
         self.status_label.pack(fill="x", pady=(0, 8))
 
-        button_row = ttk.Frame(container)
+        button_row = ttk.Frame(container, style="Auth.TFrame")
         button_row.pack(fill="x", pady=(8, 0))
 
-        self.submit_btn = ttk.Button(button_row, text="Daftar", command=self._submit)
+        self.submit_btn = ttk.Button(
+            button_row,
+            text="Daftar",
+            command=self._submit,
+            style="AuthAccent.TButton",
+        )
         self.submit_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
-        ttk.Button(button_row, text="Tutup", command=self.destroy).pack(side="right", expand=True, fill="x", padx=(4, 0))
+        ttk.Button(
+            button_row,
+            text="Tutup",
+            command=self.destroy,
+            style="Auth.TButton",
+        ).pack(side="right", expand=True, fill="x", padx=(4, 0))
 
     # ---------- submit ----------
 
@@ -173,15 +210,26 @@ class RegisterWindow(tk.Toplevel):
         for child in self.winfo_children():
             child.destroy()
 
-        container = ttk.Frame(self, padding=24)
+        container = ttk.Frame(self, padding=24, style="Auth.TFrame")
         container.pack(fill="both", expand=True)
+
+        # Logo header sukses juga
+        self._logo_ref = load_logo(64)
+        if self._logo_ref is not None:
+            tk.Label(
+                container,
+                image=self._logo_ref,
+                bg=DARK_COLORS["bg"],
+                borderwidth=0,
+                highlightthickness=0,
+            ).pack(pady=(8, 4))
 
         ttk.Label(
             container,
             text="Registrasi Berhasil!",
-            font=("Segoe UI", 18, "bold"),
-            foreground="#16a34a",
-        ).pack(pady=(8, 12))
+            style="AuthOk.TLabel",
+            font=("Segoe UI Semibold", 18),
+        ).pack(pady=(0, 12))
         ttk.Label(
             container,
             text=(
@@ -191,24 +239,53 @@ class RegisterWindow(tk.Toplevel):
             ),
             justify="center",
             wraplength=400,
+            style="AuthSub.TLabel",
         ).pack(pady=(0, 16))
 
         if result.user:
-            info_box = ttk.LabelFrame(container, text="Data Pendaftaran", padding=12)
+            # ttk.LabelFrame susah di-style sepenuhnya — pakai tk.Frame manual
+            # dengan border halus untuk konsistensi tema gelap.
+            info_box = tk.Frame(
+                container,
+                bg=DARK_COLORS["panel"],
+                highlightbackground=DARK_COLORS["border"],
+                highlightthickness=1,
+            )
             info_box.pack(fill="x", pady=(0, 16))
-            ttk.Label(info_box, text=f"Nama: {result.user.get('name', '-')}").pack(anchor="w")
-            ttk.Label(info_box, text=f"Email: {result.user.get('email', '-')}").pack(anchor="w")
-            ttk.Label(info_box, text=f"No WA: {result.user.get('whatsapp_number', '-') or '-'}").pack(anchor="w")
+            heading = tk.Label(
+                info_box,
+                text="Data Pendaftaran",
+                bg=DARK_COLORS["panel"],
+                fg=DARK_COLORS["muted"],
+                font=("Segoe UI", 9),
+            )
+            heading.pack(anchor="w", padx=12, pady=(8, 4))
+            for line in (
+                f"Nama: {result.user.get('name', '-')}",
+                f"Email: {result.user.get('email', '-')}",
+                f"No WA: {result.user.get('whatsapp_number', '-') or '-'}",
+            ):
+                tk.Label(
+                    info_box,
+                    text=line,
+                    bg=DARK_COLORS["panel"],
+                    fg=DARK_COLORS["text"],
+                    font=("Segoe UI", 10),
+                    anchor="w",
+                ).pack(anchor="w", padx=12, pady=1, fill="x")
+            tk.Frame(info_box, height=8, bg=DARK_COLORS["panel"]).pack()
 
         ttk.Button(
             container,
             text="Hubungi Admin via WhatsApp",
             command=self._open_admin_wa,
+            style="AuthOk.TButton",
         ).pack(fill="x", pady=(0, 8))
         ttk.Button(
             container,
             text="Sudah Diaktifkan? Tutup & Login",
             command=self.destroy,
+            style="Auth.TButton",
         ).pack(fill="x")
 
     def _open_admin_wa(self) -> None:
