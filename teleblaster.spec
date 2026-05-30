@@ -1,10 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec untuk membundel Telegram Blaster By VibeTool.Club menjadi
-distribusi portable (one-folder). Hasilnya akan dipindah ke folder Distribusi/
-oleh build_distribusi.bat / build_distribusi.sh.
+PyInstaller spec untuk Telegram Blaster Free Version (VibeTool.Club).
 
-Build:
+Mode: ONEFILE — output cuma 1 file ``TelegramBlaster.exe`` siap upload
+ke vibetool.id. Hasilnya dipindah ke folder ``HASIL BUILD`` oleh
+``build_distribusi.bat`` / ``build_distribusi.sh``.
+
+Build manual:
     pyinstaller teleblaster.spec --noconfirm
 """
 
@@ -26,7 +28,7 @@ datas = [
 ]
 
 # Embed .env (berisi API_ID & API_HASH) bila ada — supaya client tidak perlu
-# konfigurasi apa pun. .env akan di-extract di samping .exe saat run.
+# konfigurasi apa pun. .env akan di-extract ke temp dir saat exe run.
 env_file = ROOT / ".env"
 if env_file.exists():
     datas.append((str(env_file), "."))
@@ -36,7 +38,6 @@ if env_file.exists():
 # ---------------------------------------------------------------------------
 hiddenimports = [
     "pyrogram_compat",
-    "tgcrypto",
     "PIL._tkinter_finder",
     "pyrogram.crypto.aes",
     "pyrogram.crypto.rsa",
@@ -46,6 +47,15 @@ hiddenimports = [
     "pyrogram.raw.functions",
     "cryptography.hazmat.backends.openssl",
 ]
+
+# tgcrypto adalah accelerator opsional — masuk ke hiddenimports hanya
+# kalau benar-benar ke-install di environment build. Di Python 3.12+
+# tgcrypto belum punya wheel jadi tidak akan ada di env.
+try:
+    import tgcrypto  # noqa: F401
+    hiddenimports.append("tgcrypto")
+except Exception:
+    pass
 
 a = Analysis(
     ["gui_app.py"],
@@ -90,6 +100,8 @@ exe_kwargs = dict(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # ONEFILE mode: bundle semua binary + zip + data ke dalam satu .exe.
+    runtime_tmpdir=None,
 )
 if icon_path.exists():
     exe_kwargs["icon"] = str(icon_path)
@@ -97,18 +109,9 @@ if icon_path.exists():
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,
-    **exe_kwargs,
-)
-
-coll = COLLECT(
-    exe,
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="TelegramBlaster",
+    [],
+    **exe_kwargs,
 )
