@@ -16,6 +16,7 @@ from typing import Optional
 from .cache import AuthCache, AuthState
 from .client import ValidationResult, VibetoolClient
 from .register_window import RegisterWindow
+from .theme import DARK_COLORS, apply_auth_theme, apply_window_icon, load_logo
 
 
 class LoginWindow(tk.Toplevel):
@@ -28,7 +29,7 @@ class LoginWindow(tk.Toplevel):
     ):
         super().__init__(parent)
         self.title("Login VibeTool")
-        self.geometry("440x520")
+        self.geometry("460x600")
         self.resizable(False, False)
         # Catatan: jangan panggil transient() kalau parent ter-withdraw,
         # karena di Windows itu bikin Toplevel ikut ke-hide & tidak muncul
@@ -41,10 +42,14 @@ class LoginWindow(tk.Toplevel):
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        apply_auth_theme(self)
+        apply_window_icon(self)
+
         self.client = client
         self.cache = cache
         self.success: bool = False
         self.last_attempt_email: str = prefill_email
+        self._logo_ref = None  # cegah PhotoImage di-GC
 
         self._build_ui(prefill_email=prefill_email)
 
@@ -71,19 +76,30 @@ class LoginWindow(tk.Toplevel):
     # ---------- UI ----------
 
     def _build_ui(self, prefill_email: str) -> None:
-        container = ttk.Frame(self, padding=24)
+        container = ttk.Frame(self, padding=28, style="Auth.TFrame")
         container.pack(fill="both", expand=True)
+
+        # --- Logo di header ---
+        self._logo_ref = load_logo(72)
+        if self._logo_ref is not None:
+            logo_label = tk.Label(
+                container,
+                image=self._logo_ref,
+                bg=DARK_COLORS["bg"],
+                borderwidth=0,
+                highlightthickness=0,
+            )
+            logo_label.pack(pady=(0, 8))
 
         ttk.Label(
             container,
             text="Telegram Blaster",
-            font=("Segoe UI", 18, "bold"),
+            style="AuthHeader.TLabel",
         ).pack(pady=(0, 2))
         ttk.Label(
             container,
-            text="By VibeTool.Club",
-            font=("Segoe UI", 10),
-            foreground="#64748b",
+            text="by VibeTool.Club",
+            style="AuthSub.TLabel",
         ).pack(pady=(0, 16))
 
         ttk.Label(
@@ -91,41 +107,69 @@ class LoginWindow(tk.Toplevel):
             text="Login dengan akun member VibeTool.id",
             wraplength=380,
             justify="center",
-            foreground="#475569",
-        ).pack(pady=(0, 16))
+            style="AuthSub.TLabel",
+        ).pack(pady=(0, 18))
 
         self.email_var = tk.StringVar(value=prefill_email)
         self.password_var = tk.StringVar()
 
-        ttk.Label(container, text="Email").pack(anchor="w")
-        self.email_entry = ttk.Entry(container, textvariable=self.email_var, width=40)
-        self.email_entry.pack(fill="x", pady=(2, 10))
+        ttk.Label(container, text="Email", style="Auth.TLabel").pack(anchor="w")
+        self.email_entry = ttk.Entry(
+            container,
+            textvariable=self.email_var,
+            width=40,
+            style="Auth.TEntry",
+        )
+        self.email_entry.pack(fill="x", pady=(2, 10), ipady=4)
 
-        ttk.Label(container, text="Password").pack(anchor="w")
-        self.password_entry = ttk.Entry(container, textvariable=self.password_var, width=40, show="*")
-        self.password_entry.pack(fill="x", pady=(2, 12))
+        ttk.Label(container, text="Password", style="Auth.TLabel").pack(anchor="w")
+        self.password_entry = ttk.Entry(
+            container,
+            textvariable=self.password_var,
+            width=40,
+            show="*",
+            style="Auth.TEntry",
+        )
+        self.password_entry.pack(fill="x", pady=(2, 12), ipady=4)
         self.password_entry.bind("<Return>", lambda _e: self._on_login())
 
-        self.status_label = ttk.Label(container, text="", wraplength=380, foreground="#dc2626")
-        self.status_label.pack(fill="x", pady=(0, 8))
+        self.status_label = ttk.Label(
+            container,
+            text="",
+            wraplength=380,
+            style="AuthError.TLabel",
+        )
+        self.status_label.pack(fill="x", pady=(0, 10))
 
-        self.login_btn = ttk.Button(container, text="Login", command=self._on_login)
+        self.login_btn = ttk.Button(
+            container,
+            text="Login",
+            command=self._on_login,
+            style="AuthAccent.TButton",
+        )
         self.login_btn.pack(fill="x", pady=(2, 16))
 
         # --- Tombol pembantu di bawah ---
-        register_row = ttk.Frame(container)
-        register_row.pack(fill="x", pady=(0, 6))
-        ttk.Button(register_row, text="Daftar di Sini", command=self._open_register_window).pack(
-            side="left", expand=True, fill="x", padx=(0, 4)
-        )
-        ttk.Button(register_row, text="Daftar di Website", command=self._open_register_browser).pack(
-            side="right", expand=True, fill="x", padx=(4, 0)
-        )
+        register_row = ttk.Frame(container, style="Auth.TFrame")
+        register_row.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            register_row,
+            text="Daftar di Sini",
+            command=self._open_register_window,
+            style="Auth.TButton",
+        ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ttk.Button(
+            register_row,
+            text="Daftar di Website",
+            command=self._open_register_browser,
+            style="Auth.TButton",
+        ).pack(side="right", expand=True, fill="x", padx=(4, 0))
 
         self.wa_btn = ttk.Button(
             container,
             text="Hubungi Admin via WhatsApp",
             command=self._open_admin_wa,
+            style="Auth.TButton",
         )
         self.wa_btn.pack(fill="x")
 
@@ -240,7 +284,10 @@ class LoginWindow(tk.Toplevel):
     # ---------- helpers ----------
 
     def _set_status(self, msg: str, *, error: bool) -> None:
-        self.status_label.configure(text=msg, foreground="#dc2626" if error else "#475569")
+        self.status_label.configure(
+            text=msg,
+            style="AuthError.TLabel" if error else "AuthMuted.TLabel",
+        )
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
